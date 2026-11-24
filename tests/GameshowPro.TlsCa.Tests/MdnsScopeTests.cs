@@ -142,8 +142,9 @@ public sealed class MdnsScopeTests
     [TestMethod]
     public async Task AScopeThatCannotStart_IsRetried_WhileAnotherKeepsAdvertising()
     {
-        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [s_scopeA, s_scopeB]);
-        harness.Mdns.FailStart(s_scopeB, UnavailableFailure);
+        await using Harness harness = await Harness.Start(
+            options => options.MdnsScopes = [s_scopeA, s_scopeB],
+            configureMdns: mdns => mdns.FailStart(s_scopeB, UnavailableFailure));
 
         await harness.WaitUntil(() => harness.Mdns.For(s_scopeA).Count(advertisement => advertisement.Started) == 2, "scope A to start");
         await harness.WaitUntil(() => harness.Mdns.StartAttempts(s_scopeB) >= 2, "scope B to be retried");
@@ -198,8 +199,9 @@ public sealed class MdnsScopeTests
     [TestMethod]
     public async Task NameConflict_AtStart_IsReported_AndClearsWhenTheScopeIsRemoved()
     {
-        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [s_scopeA, s_scopeB]);
-        harness.Mdns.FailStart(s_scopeB, "The selected mDNS service or host name is already owned by another local registration.");
+        await using Harness harness = await Harness.Start(
+            options => options.MdnsScopes = [s_scopeA, s_scopeB],
+            configureMdns: mdns => mdns.FailStart(s_scopeB, "The selected mDNS service or host name is already owned by another local registration."));
 
         await harness.WaitUntil(() => harness.Status.NameConflict, "the start conflict on scope B");
         Assert.IsTrue(harness.Mdns.For(s_scopeA).All(advertisement => !advertisement.Disposed));
@@ -427,7 +429,7 @@ public sealed class MdnsScopeTests
 
         public string Name => Manager.Current.Name;
 
-        public static async Task<Harness> Start(Action<TlsCaOptions>? configure = null, Func<string>? hostName = null, string? explicitName = null, bool realMdns = false)
+        public static async Task<Harness> Start(Action<TlsCaOptions>? configure = null, Func<string>? hostName = null, string? explicitName = null, bool realMdns = false, Action<FakeMdns>? configureMdns = null)
         {
             TempDirectory directory = new();
             TestLogProvider logs = new();
@@ -438,6 +440,7 @@ public sealed class MdnsScopeTests
             configure?.Invoke(options);
             TlsCaStatus status = new(manager, options, loggers.CreateLogger<TlsCaStatus>());
             Harness harness = new(directory, loggers, logs, manager, options, status, realMdns);
+            configureMdns?.Invoke(harness.Mdns);
             await harness._service.StartAsync(CancellationToken.None);
             return harness;
         }

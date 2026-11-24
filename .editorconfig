@@ -1,0 +1,222 @@
+# GameshowPro.TlsCa editorconfig.
+#
+# The C# section encodes ../Docs/docs/coding-standards.md (the GameshowPro shared standards) as analyzer
+# severities, so the build enforces the standards instead of review. Every entry is preceded by a
+# comment that restates the standard it enforces. Severity tiers:
+#   error      - hard rules. The standard says always, never or all, and the analyzer only fires where
+#                the rule applies. EnforceCodeStyleInBuild and TreatWarningsAsErrors
+#                (Directory.Build.props) make these fail the build locally and in CI.
+#   suggestion - preferences that leave room for judgement. Fix with `dotnet format style --severity info`.
+#   none       - diagnostics that contradict a standard.
+# CA rules come from AnalysisLevel=latest-recommended (warnings, so errors here). Roslynator (RCS) keeps
+# its default severities apart from the overrides below.
+# Workflow, unsafe fixers and suppression rules: the "Code analyzers and automated fixers" section of
+# ../Docs/docs/coding-standards.md.
+
+root = true
+
+[*]
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+
+[*.{csproj,props,targets,xml,json,yml,yaml}]
+indent_size = 2
+
+[*.cs]
+
+# -- Namespaces and using directives --
+
+# Always use file-scoped namespaces.
+# IDE0160 asks for block-scoped namespaces, which contradicts the standard; IDE0161 is its inverse.
+csharp_style_namespace_declarations = file_scoped:error
+dotnet_diagnostic.IDE0160.severity = none
+dotnet_diagnostic.IDE0161.severity = error
+
+# All using directives are global and live in GlobalUsings.cs, ordered System, Microsoft, other third
+# parties, GameshowPro, then local namespaces. IDE0005 removes unnecessary ones and IDE0065 keeps them
+# outside namespaces. Neither checks that a directive is global or enforces the group order; that stays a
+# review item. dotnet_sort_system_directives_first and dotnet_separate_import_directive_groups are
+# deliberately unset: either one turns on `dotnet format`'s import sorter, which alphabetizes after
+# System and breaks the mandated group order.
+dotnet_diagnostic.IDE0005.severity = error
+csharp_using_directive_placement = outside_namespace
+dotnet_diagnostic.IDE0065.severity = error
+
+# -- Types and declarations --
+
+# Do not use var under any circumstances. Always use explicit types.
+csharp_style_var_for_built_in_types = false
+csharp_style_var_when_type_is_apparent = false
+csharp_style_var_elsewhere = false
+dotnet_diagnostic.IDE0007.severity = none
+dotnet_diagnostic.IDE0008.severity = error
+
+# Use target-typed new wherever possible: Widget example = new();
+csharp_style_implicit_object_creation_when_type_is_apparent = true
+dotnet_diagnostic.IDE0090.severity = error
+
+# Mark fields readonly where their values should not change after initialization.
+dotnet_style_readonly_field = true
+dotnet_diagnostic.IDE0044.severity = error
+# The same for structs and struct members, where the language supports it.
+csharp_style_prefer_readonly_struct = true
+csharp_style_prefer_readonly_struct_member = true
+dotnet_diagnostic.IDE0250.severity = suggestion
+dotnet_diagnostic.IDE0251.severity = suggestion
+
+# Do not initialize a field to its type's default value without a reason (justify exceptions with a pragma).
+dotnet_diagnostic.CA1805.severity = error
+
+# Always use nameof to refer to member names instead of hardcoding strings.
+dotnet_diagnostic.CA1507.severity = error
+dotnet_diagnostic.IDE0280.severity = error
+
+# Primary constructors unless construction needs logic they cannot express.
+csharp_style_prefer_primary_constructors = true
+dotnet_diagnostic.IDE0290.severity = suggestion
+
+# Auto-properties for simple storage; the field keyword when an accessor needs its own storage.
+dotnet_diagnostic.IDE0032.severity = suggestion
+
+# -- Expressions --
+
+# Always brace if, else, for, foreach, while, do, lock and fixed statement bodies.
+csharp_prefer_braces = true
+dotnet_diagnostic.IDE0011.severity = error
+
+# Use optional chaining ?. and nullish coalescing ??, including null-conditional assignment.
+dotnet_style_coalesce_expression = true
+dotnet_style_null_propagation = true
+csharp_style_conditional_delegate_call = true
+dotnet_diagnostic.IDE0029.severity = error
+dotnet_diagnostic.IDE0030.severity = error
+dotnet_diagnostic.IDE0031.severity = error
+dotnet_diagnostic.IDE0074.severity = error
+dotnet_diagnostic.IDE0270.severity = error
+dotnet_diagnostic.IDE1005.severity = error
+
+# Use collection expressions and literals where possible ([], [.. list]); supply a comparer or capacity with with(...).
+dotnet_style_prefer_collection_expression = true
+dotnet_diagnostic.IDE0028.severity = error
+dotnet_diagnostic.IDE0300.severity = error
+dotnet_diagnostic.IDE0301.severity = error
+dotnet_diagnostic.IDE0302.severity = error
+dotnet_diagnostic.IDE0303.severity = error
+dotnet_diagnostic.IDE0304.severity = error
+dotnet_diagnostic.IDE0305.severity = error
+
+# Prefer Range and Index for supported types when their slicing behavior and cost fit.
+csharp_style_prefer_index_operator = true
+csharp_style_prefer_range_operator = true
+dotnet_diagnostic.IDE0056.severity = suggestion
+dotnet_diagnostic.IDE0057.severity = suggestion
+
+# Always use the explicit discard (_) when ignoring a return value or an out parameter.
+# The IDE0058 fixer is unsafe while a parameter named _ is in scope; rename it first.
+csharp_style_unused_value_expression_statement_preference = discard_variable
+csharp_style_unused_value_assignment_preference = discard_variable
+dotnet_diagnostic.IDE0058.severity = error
+dotnet_diagnostic.IDE0059.severity = error
+
+# IDE0110 removes redundant discard patterns (such as `case int _:`). It does not enforce
+# discarded return values or out parameters; IDE0058 and IDE0059 cover ignored values.
+dotnet_diagnostic.IDE0110.severity = suggestion
+
+# Use simple using statements without braces where possible.
+csharp_prefer_simple_using_statement = true
+dotnet_diagnostic.IDE0063.severity = error
+
+# Non-trivial lambdas become local functions. The analyzer cannot judge "non-trivial".
+csharp_style_prefer_local_over_anonymous_function = true
+dotnet_diagnostic.IDE0039.severity = suggestion
+
+# Switches over finite alternatives are exhaustive, without a catch-all arm that hides newly added
+# cases: list every named member. A `_` arm may only handle unnamed values. Never apply these two
+# fixers blindly (they generate placeholder cases).
+dotnet_diagnostic.IDE0010.severity = error
+dotnet_diagnostic.IDE0072.severity = error
+
+# Use labeled break or continue when it expresses a nested-loop exit more clearly than a flag or goto.
+csharp_style_prefer_labeled_jump_statements = true
+dotnet_diagnostic.IDE0410.severity = suggestion
+
+# Prefer supported modern syntax when it improves clarity and preserves behavior.
+dotnet_diagnostic.IDE0062.severity = suggestion
+dotnet_diagnostic.IDE0066.severity = suggestion
+dotnet_diagnostic.IDE0078.severity = suggestion
+dotnet_diagnostic.IDE0083.severity = suggestion
+dotnet_diagnostic.IDE0150.severity = suggestion
+dotnet_diagnostic.IDE0200.severity = suggestion
+dotnet_diagnostic.IDE0220.severity = suggestion
+dotnet_diagnostic.IDE0230.severity = suggestion
+dotnet_diagnostic.IDE0240.severity = suggestion
+dotnet_diagnostic.IDE0241.severity = suggestion
+dotnet_diagnostic.IDE0260.severity = suggestion
+dotnet_diagnostic.IDE0320.severity = suggestion
+dotnet_diagnostic.IDE0330.severity = suggestion
+dotnet_diagnostic.IDE0340.severity = suggestion
+dotnet_diagnostic.IDE0350.severity = suggestion
+
+# -- Async --
+
+# Unless there is a synchronous overload, do not use the Async suffix. RCS1046 requires the suffix,
+# which contradicts the standard. RCS1047 forbids it on non-async methods, which agrees.
+dotnet_diagnostic.RCS1046.severity = none
+dotnet_diagnostic.RCS1047.severity = error
+
+# -- Generated code and interop --
+
+# All regex statements use generated regex.
+dotnet_diagnostic.SYSLIB1045.severity = error
+
+# Native declarations use LibraryImport wherever possible.
+dotnet_diagnostic.SYSLIB1054.severity = error
+
+# -- Naming --
+
+# Interface names begin with I followed by PascalCase.
+dotnet_naming_rule.interfaces_i_prefix.severity = error
+dotnet_naming_rule.interfaces_i_prefix.symbols = interfaces
+dotnet_naming_rule.interfaces_i_prefix.style = i_pascal
+dotnet_naming_symbols.interfaces.applicable_kinds = interface
+dotnet_naming_style.i_pascal.required_prefix = I
+dotnet_naming_style.i_pascal.capitalization = pascal_case
+
+# Constants use PascalCase (const fields and const locals).
+dotnet_naming_rule.constants_pascal.severity = error
+dotnet_naming_rule.constants_pascal.symbols = constants
+dotnet_naming_rule.constants_pascal.style = pascal
+dotnet_naming_symbols.constants.applicable_kinds = field, local
+dotnet_naming_symbols.constants.required_modifiers = const
+
+# Static fields are prefixed with s_ followed by camelCase.
+dotnet_naming_rule.static_fields_s_prefix.severity = error
+dotnet_naming_rule.static_fields_s_prefix.symbols = private_static_fields
+dotnet_naming_rule.static_fields_s_prefix.style = s_camel
+dotnet_naming_symbols.private_static_fields.applicable_kinds = field
+dotnet_naming_symbols.private_static_fields.applicable_accessibilities = private, internal, private_protected
+dotnet_naming_symbols.private_static_fields.required_modifiers = static
+dotnet_naming_style.s_camel.required_prefix = s_
+dotnet_naming_style.s_camel.capitalization = camel_case
+
+# Private class fields are prefixed with _ followed by camelCase.
+dotnet_naming_rule.private_fields_underscore.severity = error
+dotnet_naming_rule.private_fields_underscore.symbols = private_fields
+dotnet_naming_rule.private_fields_underscore.style = underscore_camel
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private, internal, private_protected
+dotnet_naming_style.underscore_camel.required_prefix = _
+dotnet_naming_style.underscore_camel.capitalization = camel_case
+
+# Methods, types and property names use PascalCase.
+dotnet_naming_rule.members_pascal.severity = error
+dotnet_naming_rule.members_pascal.symbols = members
+dotnet_naming_rule.members_pascal.style = pascal
+dotnet_naming_symbols.members.applicable_kinds = namespace, class, struct, enum, delegate, method, property, event
+dotnet_naming_style.pascal.capitalization = pascal_case
+dotnet_diagnostic.IDE1006.severity = error
+
+# Test projects: MSTest test names use Method_Scenario_Result, so identifiers may contain underscores.
+[tests/*.Tests/**.cs]
+dotnet_diagnostic.CA1707.severity = none

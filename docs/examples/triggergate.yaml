@@ -1,0 +1,37 @@
+# Example values for TriggerGate: three builds with different ports and different ways to allow a reset.
+product: TriggerGate
+title: Open the web page over HTTPS
+ui_name: web page
+settings_prefix: TriggerGate
+builds:
+  - name: Windows service
+    http_port: 9090
+    https_port: 9190
+    name_pattern: <host>-triggergate.local
+    name_example: studio-pc-triggergate.local
+    gate: loopback
+    own_certificate: true
+    storage: '%ProgramData%\GameshowPro\TriggerGate\tls'
+  - name: Uno
+    host_term: device
+    http_port: 9090
+    https_port: 443
+    name_pattern: <host>-triggergate.local
+    name_example: uno-1-triggergate.local
+    gate: loopback
+    local_access: false
+    storage: /var/lib/gameshowpro/triggergate/tls
+  - name: ESP32 board
+    host_term: board
+    http_port: 80
+    https_port: 443
+    name_pattern: triggergate-<id>.local
+    name_example: triggergate-4ad8f7.local
+    gate: boot
+    local_access: false
+    auto_renew: false
+sections:
+  own_certificate: |
+    The ESP32 board does not take these settings.
+  notes: |
+    - **ESP32 boards keep their keys in the board's flash memory.** Erasing the board creates a new CA, as a reset does.

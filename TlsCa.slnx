@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GameshowPro.TlsCa/GameshowPro.TlsCa.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GameshowPro.TlsCa.Tests/GameshowPro.TlsCa.Tests.csproj" />
+  </Folder>
+</Solution>

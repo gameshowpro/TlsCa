@@ -1,0 +1,72 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <PackageId>GameshowPro.TlsCa</PackageId>
+    <Title>GameshowPro per-installation TLS certificate authority</Title>
+    <Authors>Hamish Barjonas</Authors>
+    <Product>GameshowPro TLS CA</Product>
+    <Description>Per-installation, name-constrained certificate authority that lets GameshowPro applications serve HTTPS on offline LANs under their mDNS name.</Description>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <Copyright>Barjonas LLC 2026</Copyright>
+    <PackageTags>tls https x509 certificate mdns</PackageTags>
+    <IncludeSymbols>True</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>readme.md</PackageReadmeFile>
+    <Configurations>Debug;Release</Configurations>
+    <OutputPath>bin\$(Configuration)</OutputPath>
+    <!-- Apps publish with Native AOT (Soundling): the trim, single-file and AOT analyzers run on every build, and warnings
+         are errors. Endpoints use RequestDelegate handlers and source-generated JSON only. -->
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\readme.md" Pack="true" PackagePath="\" />
+    <!-- The end-user guide template, its renderer and the integration guide ship in the package, so an app's documentation
+         build reads the guide that matches the library version it references (docs/integrating-the-https-guide.md). -->
+    <None Include="..\..\docs\**" Exclude="..\..\docs\**\__pycache__\**" Pack="true" PackagePath="docs\%(RecursiveDir)" Visible="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The ASP.NET Core integration lives in this assembly under GameshowPro.TlsCa.AspNetCore. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The canonical management page, shared with the ESP32 firmware. Served by MapGameshowProTlsCa. -->
+    <EmbeddedResource Include="wwwroot\management.html" LogicalName="GameshowPro.TlsCa.management.html" />
+    <!-- The static notice served instead of the page when the built-in CA is not in use (not shared with the ESP32). -->
+    <EmbeddedResource Include="wwwroot\notice.html" LogicalName="GameshowPro.TlsCa.notice.html" />
+  </ItemGroup>
+  <PropertyGroup>
+    <!-- GameshowPro.Mdns: the published package by default; opt into the sibling checkout for development.
+         Version 1.1.2 is the first release with AdvertisedServiceOptions.HostName. -->
+    <MdnsProjectPath>..\..\..\Mdns\src\GameshowPro.Mdns\GameshowPro.Mdns.csproj</MdnsProjectPath>
+    <MdnsPackageVersion>1.1.2</MdnsPackageVersion>
+    <UseMdnsProject Condition="'$(UseMdnsProject)' == ''">false</UseMdnsProject>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(UseMdnsProject)' == 'true'">
+    <ProjectReference Include="$(MdnsProjectPath)" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseMdnsProject)' != 'true' and '$(MdnsPackageVersion)' != ''">
+    <PackageReference Include="GameshowPro.Mdns" Version="$(MdnsPackageVersion)" />
+  </ItemGroup>
+  <Target Name="CheckMdnsReference" BeforeTargets="CollectPackageReferences;CoreCompile">
+    <Error Condition="'$(UseMdnsProject)' != 'true' and '$(MdnsPackageVersion)' == ''" Text="MdnsPackageVersion must identify a published GameshowPro.Mdns release with AdvertisedServiceOptions.HostName (1.1.2 or later)." />
+    <Message Condition="'$(UseMdnsProject)' == 'true'" Importance="high" Text="LOCAL PROJECT REFERENCE: GameshowPro.TlsCa builds against $(MdnsProjectPath). Packing is refused in this state." />
+  </Target>
+  <Target Name="RefusePackWithMdnsProject" BeforeTargets="GenerateNuspec">
+    <Error Condition="'$(UseMdnsProject)' == 'true'" Text="GameshowPro.TlsCa cannot be packed against the sibling Mdns checkout: the package would not declare its GameshowPro.Mdns dependency. Build with -p:UseMdnsProject=false and MdnsPackageVersion set." />
+  </Target>
+  <ItemGroup>
+    <!-- The build time is the default floor for the clock (TlsCaOptions.MinimumTime): a system clock earlier than the
+         build is treated as the build time. Read back by BuildInfo. -->
+    <AssemblyMetadata Include="GameshowPro.TlsCa.BuildTimestamp" Value="$([System.DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Nerdbank.GitVersioning" Version="3.10.94">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <!-- Windows DPAPI for the private keys at rest (DpapiKeyProtector). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="11.0.0" />
+  </ItemGroup>
+</Project>

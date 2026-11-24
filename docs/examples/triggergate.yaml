@@ -30,6 +30,7 @@ builds:
     gate: boot
     local_access: false
     auto_renew: false
+    allow_https_fallback: false  # The firmware has not implemented the HTTPS session escape yet.
 sections:
   own_certificate: |
     The ESP32 board does not take these settings.

@@ -35,6 +35,9 @@ code,.fp{font-family:ui-monospace,Consolas,Menlo,monospace;font-size:.92rem}
 #fallback-addresses{margin:.4rem 0;padding-left:1.3rem}
 #qr{width:min(12rem,100%);height:auto;background:#fff;border:8px solid #fff;border-radius:8px;image-rendering:pixelated}
 a{color:var(--accent)}
+label{display:block;margin:.5rem 0 .2rem}
+input[type=file]{max-width:100%;font:inherit}
+.pem{width:100%;min-height:7rem;font-family:ui-monospace,Consolas,Menlo,monospace;font-size:.85rem}
 [hidden]{display:none!important}
 @media (max-width:30rem){dl{grid-template-columns:1fr}dt{margin-top:.5rem}}
 </style>
@@ -63,9 +66,9 @@ a{color:var(--accent)}
 <p class="address"><code id="setup-address"></code></p>
 </div>
 <div id="fallback-block" hidden>
-<p>Can't reach the .local name? Open one of these plain HTTP addresses on the other computer to install the certificate:</p>
+<p id="fallback-help">Can't reach the .local name? Open one of these plain HTTP addresses on the other computer to install the certificate:</p>
 <ul id="fallback-addresses" class="address"></ul>
-<p>The secure address still needs .local name resolution.</p>
+<p id="fallback-note">The secure address still needs .local name resolution.</p>
 </div>
 </section>
 
@@ -74,6 +77,7 @@ a{color:var(--accent)}
 <p>Install this device's certificate once on each computer or phone that will open its secure address. It only vouches for this device's own name, nothing else. Before you install it, compare the fingerprint above with the one shown at the device or by your administrator.</p>
 <div class="platforms" id="platforms"></div>
 <p id="http-fallback" hidden>If this computer cannot reach the .local name or trust the certificate, <a id="continue-http" href="#">Continue over HTTP</a> for this browser session.</p>
+<p id="https-fallback" hidden>If this computer cannot reach the .local name or trust the certificate, <a id="continue-https" href="#">Continue on this address</a> for this browser session. Your browser may continue to show a certificate warning.</p>
 </section>
 
 <section id="manage" hidden>
@@ -86,6 +90,47 @@ a{color:var(--accent)}
 <p id="renew-help"><strong>Renew</strong> issues a new certificate for this device. Browsers and phones that already trust it keep working and nobody has to do anything. This happens automatically when it is close to expiry, if the product supports that.</p>
 <p id="reset-help"><strong>Reset</strong> creates a completely new identity. Every browser and phone has to install the new certificate again, and should remove the old one (its fingerprint is shown above). Only reset if you must, for example after renaming the computer.</p>
 <p id="result" role="status"></p>
+</section>
+
+<section id="own-cert" hidden>
+<h2>Your own certificate</h2>
+<p>Use a certificate from your own certificate authority, if computers and phones here already trust it. Without one, the device keeps serving the certificate from its own authority.</p>
+<p><strong>Recommended: create a signing request first.</strong> The device makes its own private key, which never leaves it, and your certificate authority signs the request. That works over plain HTTP too, and the key is an elliptic-curve key, which keeps connections fast. Uploading a certificate with its private key also works, over a secure connection only. If that key is an RSA key, every new secure connection to this device takes about twice as long to set up (about 1.5 seconds instead of 0.7), which slows a page load noticeably; an elliptic-curve key (P-256 or P-384) does not have that cost.</p>
+<dl id="own-facts"></dl>
+<p id="own-gate"></p>
+<div class="platforms">
+<div class="platform">
+<h3>1. Create a signing request</h3>
+<p>The device creates its own private key and a request for your certificate authority to sign. The key never leaves the device, so this works over plain HTTP too. A new request replaces any earlier one.</p>
+<div class="row">
+<button class="btn" id="csr-make" type="button">Create signing request</button>
+<a class="btn plain" id="csr-link" href="/.well-known/gameshowpro/certificate/request.csr" download="device.csr" hidden>Download signing request</a>
+</div>
+<textarea class="pem" id="csr-text" readonly hidden aria-label="Signing request"></textarea>
+</div>
+<div class="platform">
+<h3>2. Upload the signed certificate</h3>
+<p id="signed-hint">Create a signing request first. The certificate must be the one your authority issued for that request.</p>
+<label for="signed-cert-file">Signed certificate (PEM; add any intermediate certificates after it)</label>
+<input type="file" id="signed-cert-file" accept=".pem,.crt,.cer">
+<div class="row"><button class="btn" id="signed-upload" type="button">Upload signed certificate</button></div>
+</div>
+<div class="platform">
+<h3>Or upload a certificate and its private key</h3>
+<label for="own-cert-file">Certificate (PEM; the server certificate first, then any intermediate certificates)</label>
+<input type="file" id="own-cert-file" accept=".pem,.crt,.cer">
+<label for="own-key">Private key (PEM, not password protected)</label>
+<input type="file" id="own-key" accept=".pem,.key">
+<p class="muted" id="own-key-reason" hidden>The private key can only be sent over a secure (https) connection, and the device refuses it over plain HTTP. Open this page at the device's secure address, or create a signing request below, which needs no key upload.</p>
+<div class="row"><button class="btn" id="own-upload" type="button">Upload certificate and key</button></div>
+</div>
+<div class="platform">
+<h3>Remove your certificate</h3>
+<p>Deletes your certificate and any pending signing request. The device serves its own authority's certificate again, which computers and phones that already trust it accept. Renew and Reset always act on the device's own authority.</p>
+<div class="row"><button class="btn danger" id="own-remove" type="button">Remove your certificate</button></div>
+</div>
+</div>
+<p id="own-result" role="status"></p>
 </section>
 </main>
 <script>
@@ -116,7 +161,10 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 "use strict";
 (function () {
   var P = "/.well-known/gameshowpro/";
+  var OWN_MAX = 12 * 1024;
   var info = null, gateKind = null, countdown = null;
+  var gateEnd = null, gateTimer = null, forwardStop = null, forwardHeld = false;
+  var httpsEscapeReady = false;
 
   function $(id) { return document.getElementById(id); }
   function el(tag, text, cls) {
@@ -172,6 +220,15 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     } catch (_) { return null; }
   }
 
+  function sameHostHttpsDestination(i) {
+    if (location.protocol !== "https:" || isLoopback()) { return null; }
+    try {
+      var base = new URL(location.origin), target = new URL(safeReturnTo(), base);
+      if (base.hostname.toLowerCase() === new URL(httpsUrl(i)).hostname.toLowerCase()) { return null; }
+      return base.protocol === "https:" && target.origin === base.origin ? target.href : null;
+    } catch (_) { return null; }
+  }
+
   function renderShare(i) {
     var box = $("other-computers");
     box.hidden = !isLoopback();
@@ -207,6 +264,17 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       list.appendChild(item);
     });
     $("fallback-block").hidden = !list.firstChild;
+    var httpsFallback = !!list.firstChild && fallbacks.every(function (address) {
+      return typeof address === "string" && address.indexOf("https://") === 0;
+    });
+    $("fallback-help").textContent = httpsFallback
+      ? "Can't reach the .local name? Open one of these HTTPS addresses on the other computer. Your browser will show a certificate warning because the certificate names the .local address."
+      : "Can't reach the .local name? Open one of these plain HTTP addresses on the other computer to install the certificate:";
+    $("fallback-note").textContent = httpsFallback
+      ? (i.allowHttpsFallback === true
+        ? "After accepting the warning, this page can offer Continue on this address if the .local name still cannot be reached."
+        : "The certificate's name differs from these addresses. The secure address above still needs .local name resolution.")
+      : "The secure address still needs .local name resolution.";
   }
 
   function leafStatus(i) {
@@ -228,6 +296,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 
   function render(i) {
     info = i;
+    setGateCountdown(i);
     document.title = i.product + " certificate setup";
     $("title").textContent = i.product + " certificate setup";
     $("subtitle").textContent = "Device name: " + i.mdnsName + (i.version ? " (version " + i.version + ")" : "");
@@ -265,13 +334,53 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     $("reset-help").hidden = false;
     $("install").hidden = false;
     $("http-fallback").hidden = true;
+    $("https-fallback").hidden = true;
+    httpsEscapeReady = false;
     $("manage").hidden = false;
+    renderOwn(i);
+    applyGate();
+  }
+
+  // Devices that report gateSecondsRemaining (the ESP32 firmware) tell how long the boot window stays open. The page
+  // counts down on its own clock from the moment the answer arrived, and disables the gated buttons at zero.
+  function setGateCountdown(i) {
+    if (gateTimer) { clearInterval(gateTimer); gateTimer = null; }
+    gateEnd = i && i.gate === "boot" && typeof i.gateSecondsRemaining === "number"
+      ? Date.now() + Math.max(0, i.gateSecondsRemaining) * 1000 : null;
+    if (gateEnd !== null && gateEnd > Date.now()) { gateTimer = setInterval(gateTick, 1000); }
+  }
+  function gateShut() { return gateEnd !== null && Date.now() >= gateEnd; }
+  function gateClock() {
+    var s = Math.max(0, Math.ceil((gateEnd - Date.now()) / 1000));
+    return Math.floor(s / 60) + ":" + (s % 60 < 10 ? "0" : "") + (s % 60);
+  }
+  function gateTexts() {
+    if (gateEnd === null) { return false; }
+    var shut = gateShut();
+    $("gate").textContent = shut
+      ? "The five minutes after the device powered up have passed, so Renew and Reset are refused. Power-cycle the device (or its PoE port), reload this page, then try again within 5 minutes."
+      : "Renew and Reset are allowed for another " + gateClock() + ", the five minutes after the device powered up. After that, power-cycle the device to open the window again.";
+    $("own-gate").textContent = shut
+      ? "The five minutes after the device powered up have passed, so changes here are refused. Power-cycle the device (or its PoE port), reload this page, then make the change within 5 minutes."
+      : "Changes here are allowed for another " + gateClock() + ", the five minutes after the device powered up. After that, power-cycle the device to open the window again.";
+    return true;
+  }
+  function applyGate() {
+    var shut = gateShut();
+    $("renew").disabled = shut;
+    $("reset").disabled = shut;
+    if (info) { renderOwn(info); }
+  }
+  function gateTick() {
+    gateTexts();
+    if (gateShut()) { clearInterval(gateTimer); gateTimer = null; applyGate(); }
   }
 
   function explainGate(gate, resetOnly) {
     gateKind = gate || null;
     var g = $("gate");
-    if (resetOnly) {
+    if (gate === "boot" && gateEnd !== null) { gateTexts(); }
+    else if (resetOnly) {
       if (gate === "button") { g.textContent = "Press the button on the device, then press Reset here within 60 seconds."; }
       else if (gate === "boot") { g.textContent = "Power-cycle the device, then press Reset here within 5 minutes. It is refused at any other time."; }
       else if (gate === "loopback") { g.textContent = "Reset only works when this page is opened on the computer that runs the app, using a localhost address. It is refused from anywhere else on the network."; }
@@ -296,16 +405,21 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     $("other-computers").hidden = true;
     $("install").hidden = true;
     $("http-fallback").hidden = true;
+    $("https-fallback").hidden = true;
+    httpsEscapeReady = false;
+    setGateCountdown(j);
     explainGate(j.gate, true);
     $("renew").hidden = true;
     $("renew-help").hidden = true;
     $("reset-help").hidden = true;
+    $("own-cert").hidden = true;
     $("manage").hidden = false;
+    $("reset").disabled = gateShut();
   }
 
   var platforms = [
     ["Windows", "ca.crt", ["Download the certificate and open it, then choose Install Certificate.", "Choose Local Machine (or Current User), select Place all certificates in the following store, and pick Trusted Root Certification Authorities.", "Chrome and Edge use it at once. Firefox keeps its own list unless it is set to use the Windows one (about:config, security.enterprise_roots.enabled), so import the file in Firefox too if it still warns."]],
-    ["Android", "ca.crt", ["Download the certificate, then open Settings and search for Install a certificate.", "Choose CA certificate, accept the warning, and select the downloaded file.", "Chrome on Android 12 or later finds .local names itself. Older versions may not."]],
+    ["Android", "ca.crt", ["Download the certificate, but do not open it from the download notification. Open Settings and search for Install a certificate.", "Choose CA certificate, tap Install anyway, then pick the downloaded file.", "Chrome on Android 12 or later finds .local names itself. Older versions may not."]],
     ["macOS", "ca.pem", ["Download the certificate and double-click it to add it to Keychain Access (choose the System keychain).", "Open the certificate, expand Trust, and set When using this certificate to Always Trust.", "Safari and Chrome use it at once. Firefox needs its own import under Settings, Privacy and Security, View Certificates."]],
     ["Linux", "ca.pem", ["Download the certificate. On Debian or Ubuntu copy it to /usr/local/share/ca-certificates/ with a .crt name and run sudo update-ca-certificates. On Fedora copy it to /etc/pki/ca-trust/source/anchors/ and run sudo update-ca-trust.", "Chrome and Firefox keep their own lists: import the file under their Certificates settings, in Authorities."]],
     ["iPhone and iPad", "ca.mobileconfig", ["Download the profile in Safari and tap Allow.", "Open Settings, tap Profile Downloaded, and install it.", "Then open Settings, General, About, Certificate Trust Settings, and turn on full trust for this certificate."]]
@@ -342,9 +456,18 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     var b = $("probe"); clear(b); b.className = "note " + cls; b.hidden = false; b.appendChild(el("span", text)); return b;
   }
 
+  // The operator working in the certificate section of an HTTP page (or part way through a signing request, which can
+  // only be finished over HTTP) must not be carried off to the secure page: that is the point of using HTTP there.
+  function holdForward() {
+    forwardHeld = true;
+    if (forwardStop) { forwardStop(); }
+  }
+
   function probe(i) {
     var url = httpsUrl(i), destination = secureDestination(i);
     $("http-fallback").hidden = true;
+    $("https-fallback").hidden = true;
+    httpsEscapeReady = false;
     if (location.origin === new URL(url).origin) {
       showProbe("You are connected securely, so this browser trusts this device.", "ok");
       return;
@@ -362,6 +485,11 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         }
         var left = 5;
         var b = showProbe("", "ok");
+        if (i.certificateUpload === true && (forwardHeld || i.certificateRequestPending === true)) {
+          b.appendChild(el("span", "This device is trusted. "));
+          var stay = el("a", "Open the secure page"); stay.href = destination; b.appendChild(stay);
+          return;
+        }
         var msg = el("span"), cancel = el("a", "Cancel");
         cancel.href = "#"; cancel.style.marginLeft = ".6rem";
         b.appendChild(msg); b.appendChild(cancel);
@@ -371,16 +499,43 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
           left -= 1;
           if (left <= 0) { clearInterval(countdown); location.replace(destination); } else { tick(); }
         }, 1000);
-        cancel.addEventListener("click", function (e) {
-          e.preventDefault(); clearInterval(countdown);
+        function stop() {
+          clearInterval(countdown); forwardStop = null;
           clear(b); b.appendChild(el("span", "This device is trusted. "));
           var go = el("a", "Open the secure page"); go.href = destination; b.appendChild(go);
-        });
+        }
+        forwardStop = stop;
+        cancel.addEventListener("click", function (e) { e.preventDefault(); stop(); });
       })
       .catch(function () {
         clearTimeout(timer);
         showProbe("This browser cannot reach or does not trust this device's secure address. If the name resolves, install its certificate below, then reload this page.", "warn");
         $("http-fallback").hidden = isLoopback() || i.allowHttpFallback !== true || !sameHostHttpDestination(i);
+        httpsEscapeReady = i.allowHttpsFallback === true && !!sameHostHttpsDestination(i);
+        $("https-fallback").hidden = !httpsEscapeReady;
+      });
+  }
+
+  // The 403 body of the ESP32 firmware names the failed check: {"error": "...", "reason": "gate-closed" | "host" | "origin"}.
+  // The .NET library answers "refused", and an older device sends no body; those get the wording for the gate kind.
+  function reasonMessage(reason) {
+    if (reason === "gate-closed") { return "Refused: the five minutes after the device powered up have passed. Power-cycle the device (or its PoE port), reload this page, then try again within 5 minutes."; }
+    if (reason === "host") { return "Refused: this page was opened by an address the device does not accept as its own. Open it by the device's .local name or its IP address, then try again."; }
+    if (reason === "origin") { return "Refused: the request came from a different web address than the one the device was asked at. Open this page directly at the device's address (not inside another page or through a proxy), then try again."; }
+    return null;
+  }
+
+  function forbidden(r, fallback) {
+    return r.json()
+      .then(function (j) { return j && typeof j === "object" ? j.reason : null; }, function () { return null; })
+      .then(function (reason) {
+        if (reason === "gate-closed" && gateKind === "boot") {
+          gateEnd = Date.now();
+          if (gateTimer) { clearInterval(gateTimer); gateTimer = null; }
+          gateTexts();
+          applyGate();
+        }
+        return reasonMessage(reason) || fallback;
       });
   }
 
@@ -396,7 +551,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     out.className = ""; out.textContent = "Working…";
     fetch(P + kind, { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ time: Math.floor(Date.now() / 1000) }) })
       .then(function (r) {
-        if (r.status === 403) { throw new Error(refusal(gateKind)); }
+        if (r.status === 403) { return forbidden(r, refusal(gateKind)).then(function (m) { throw new Error(m); }); }
         if (!r.ok) { throw new Error("The device refused or failed the request (status " + r.status + ")."); }
         return r.json();
       })
@@ -407,6 +562,143 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       })
       .catch(function (e) { out.className = "bad note"; out.textContent = e.message; });
   }
+
+  // Your own certificate (only for devices whose info.json says certificateUpload: the ESP32 firmware).
+  function ownGateText() {
+    if (gateKind === "button") { return "Press the button on the device, then make a change here within 60 seconds."; }
+    if (gateKind === "loopback") { return "Changes here only work when this page is opened on the computer that runs the app, using a localhost address."; }
+    return "Power-cycle the device, then make a change here within 5 minutes. Changes are refused at any other time.";
+  }
+
+  function renderOwn(i) {
+    var box = $("own-cert");
+    box.hidden = !i || i.certificateUpload !== true;
+    if (box.hidden) { return; }
+    var own = i.certificateSource === "own", pending = i.certificateRequestPending === true;
+    var dl = $("own-facts");
+    clear(dl);
+    fact(dl, "Served certificate", own ? "Your own certificate" : "The device's own certificate authority (default)");
+    var names = Array.isArray(i.certificateDnsNames) ? i.certificateDnsNames.filter(function (n) { return typeof n === "string" && n; }) : [];
+    fact(dl, "Names", names.length ? names.join(", ") : "Not reported");
+    if (own && typeof i.certificateNotAfter === "number") {
+      var d = days(i.certificateNotAfter), text, cls;
+      if (d < 0) { text = "Expired " + date(i.certificateNotAfter) + ". Upload a new certificate."; cls = "bad"; }
+      else if (d < 30) { text = "Expires " + date(i.certificateNotAfter) + " (" + d + " days). The device does not renew it; get a new one from your authority."; cls = "warn"; }
+      else { text = "Valid until " + date(i.certificateNotAfter) + ". The device does not renew it."; cls = "ok"; }
+      fact(dl, "Your certificate", text).firstChild.className = cls;
+    }
+    fact(dl, "Signing request", pending ? "Pending: waiting for its signed certificate" : "None");
+    if (!gateTexts()) { $("own-gate").textContent = ownGateText(); }
+    var secure = location.protocol === "https:", shut = gateShut();
+    $("own-key").disabled = !secure;
+    $("own-upload").disabled = !secure || shut;
+    $("own-key-reason").hidden = secure;
+    $("csr-make").disabled = shut;
+    $("csr-link").hidden = !pending;
+    $("signed-hint").hidden = pending;
+    $("signed-upload").disabled = !pending || shut;
+    $("own-remove").disabled = !(own || pending) || shut;
+  }
+
+  function ownMessage(text, cls) { var o = $("own-result"); o.className = cls ? cls + " note" : ""; o.textContent = text; }
+  function plainError(text) { var e = new Error(text); e.fromDevice = true; return e; }
+
+  function ownRefusal() {
+    if (gateKind === "button" || gateKind === "loopback") { return refusal(gateKind); }
+    return "Refused. The five minutes after the device powered up have passed, or this page was opened by an address the device does not accept. Power-cycle the device (or its PoE port), then try again within 5 minutes, opening this page by the device's .local name or IP address.";
+  }
+
+  function ownFailure(r) {
+    if (r.status === 403) { return forbidden(r, ownRefusal()).then(function (m) { throw plainError(m); }); }
+    if (r.status === 415) { throw plainError("The device did not accept the request format (status 415). Reload this page, and check that no proxy sits between this browser and the device."); }
+    var plain = r.status === 503 ? "The device is short of memory right now. Try again in a few seconds." : "The device refused or failed the request (status " + r.status + ").";
+    if (r.status !== 400 && r.status !== 409 && r.status !== 503) { throw plainError(plain); }
+    return r.json()
+      .then(function (j) { return j && typeof j.error === "string" && j.error ? j.error : plain; }, function () { return plain; })
+      .then(function (m) { throw plainError(m); });
+  }
+
+  function ownPost(path, extra) {
+    var body = { time: Math.floor(Date.now() / 1000) };
+    Object.keys(extra || {}).forEach(function (k) { body[k] = extra[k]; });
+    return fetch(P + path, { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.ok ? r : ownFailure(r); });
+  }
+
+  function ownCaught(e) {
+    if (e && e.fromDevice) { ownMessage(e.message, "bad"); return; }
+    ownMessage(location.protocol === "https:"
+      ? "The connection to the device was lost. After a change the device restarts its secure server with a different certificate, which ends this connection. Wait a few seconds, then reload this page. Your browser may warn about the certificate until it trusts the authority that issued it. If the page does not come back, check the certificate shown after reloading to see whether the change was made."
+      : "The connection to the device was lost, or its reply could not be read. Reload this page and check the certificate shown above to see whether the change was made.", "warn");
+  }
+
+  function restartNote() {
+    return location.protocol === "https:"
+      ? " The device is restarting its secure server, so this page may stop responding for a few seconds: reload it then. Your browser may warn about the certificate until it trusts the authority that issued it."
+      : " The device is restarting its secure server. This plain HTTP page is not affected. The secure address will warn until the browser trusts the authority that issued the certificate.";
+  }
+
+  function readPem(input, what) {
+    var f = input.files && input.files[0];
+    if (!f) { return Promise.reject(plainError("Choose the " + what + " file first.")); }
+    if (f.size > OWN_MAX) { return Promise.reject(plainError("The " + what + " file is larger than the 12 KiB the device accepts.")); }
+    return f.text();
+  }
+
+  function ownUpload(withKey) {
+    var certInput = $(withKey ? "own-cert-file" : "signed-cert-file"), keyInput = $("own-key");
+    if (withKey && location.protocol !== "https:") {
+      ownMessage("The private key can only be sent over a secure (https) connection. Open this page at the device's secure address, or create a signing request instead.", "bad");
+      return;
+    }
+    ownMessage("Working…", "");
+    var pems = withKey ? Promise.all([readPem(certInput, "certificate"), readPem(keyInput, "private key")]) : readPem(certInput, "certificate").then(function (c) { return [c]; });
+    pems.then(function (p) {
+      var body = { certificate: p[0] };
+      if (withKey) { body.key = p[1]; }
+      return ownPost("certificate", body);
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        certInput.value = ""; keyInput.value = "";
+        render(j);
+        ownMessage((withKey ? "Certificate and key installed." : "Signed certificate installed.") + restartNote(), "ok");
+      })
+      .catch(ownCaught);
+  }
+
+  function ownRequest() {
+    ownMessage("Working…", "");
+    ownPost("certificate/request")
+      .then(function (r) { return r.text(); })
+      .then(function (pem) {
+        var t = $("csr-text");
+        t.value = pem; t.hidden = false;
+        if (info) { info.certificateRequestPending = true; renderOwn(info); }
+        ownMessage("Signing request created. Download it and have your certificate authority sign it, then upload the signed certificate here. Creating another request replaces this one.", "ok");
+      })
+      .catch(ownCaught);
+  }
+
+  function ownRemove() {
+    if (!confirm("Remove your certificate?\n\nThe device will serve its own authority's certificate again, and any pending signing request is deleted.")) { return; }
+    ownMessage("Working…", "");
+    ownPost("certificate/remove")
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        $("csr-text").value = ""; $("csr-text").hidden = true;
+        render(j);
+        ownMessage("Your certificate was removed. The device serves its own authority's certificate again." + restartNote(), "ok");
+      })
+      .catch(ownCaught);
+  }
+
+  $("own-cert").addEventListener("focusin", holdForward);
+  $("own-cert").addEventListener("pointerdown", holdForward);
+  $("own-upload").addEventListener("click", function () { ownUpload(true); });
+  $("signed-upload").addEventListener("click", function () { ownUpload(false); });
+  $("csr-make").addEventListener("click", ownRequest);
+  $("own-remove").addEventListener("click", ownRemove);
 
   $("renew").addEventListener("click", function () { act("renew"); });
   $("reset").addEventListener("click", function () { act("reset"); });
@@ -426,6 +718,14 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     var destination = sameHostHttpDestination(info);
     if (!destination) { return; }
     document.cookie = "gsp-tlsca-http=1; Path=/; SameSite=Lax";
+    location.assign(destination);
+  });
+  $("continue-https").addEventListener("click", function (event) {
+    event.preventDefault();
+    if (!info || info.allowHttpsFallback !== true || !httpsEscapeReady || $("https-fallback").hidden) { return; }
+    var destination = sameHostHttpsDestination(info);
+    if (!destination) { return; }
+    document.cookie = "gsp-tlsca-https=1; Path=/; SameSite=Lax; Secure";
     location.assign(destination);
   });
   renderPlatforms();

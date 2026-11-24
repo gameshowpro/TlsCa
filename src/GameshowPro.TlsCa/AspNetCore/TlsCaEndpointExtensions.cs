@@ -112,7 +112,10 @@ public static class TlsCaApplicationBuilderExtensions
                 if (status.Mode == TlsCaMode.BuiltInCa && options.RedirectHttpsHost
                     && navigation && host.HasValue
                     && status.MdnsName is { Length: > 0 } canonical
-                    && !host.Host.Equals(canonical, StringComparison.OrdinalIgnoreCase))
+                    && !host.Host.Equals(canonical, StringComparison.OrdinalIgnoreCase)
+                    && !(options.AllowHttpsFallback
+                        && request.Cookies.TryGetValue("gsp-tlsca-https", out string? httpsFallback)
+                        && httpsFallback == "1"))
                 {
                     return RedirectTo($"https://{host.ToUriComponent()}{TlsCaPaths.WellKnownPrefix}/?returnTo={Uri.EscapeDataString(pathAndQuery)}");
                 }

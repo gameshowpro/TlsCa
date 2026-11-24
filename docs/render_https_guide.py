@@ -58,6 +58,8 @@ BUILD_DEFAULTS = {
     "auto_renew": True,
     "local_access": True,
     "http_redirects": True,
+    "allow_http_fallback": True,
+    "allow_https_fallback": True,
     "own_certificate": False,
     "storage": [],
 }

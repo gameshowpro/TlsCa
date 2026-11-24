@@ -1,6 +1,6 @@
 namespace GameshowPro.TlsCa.AspNetCore;
 
-/// <summary>Builds informational HTTP addresses without probing or connecting to the network.</summary>
+/// <summary>Builds informational browser addresses without probing or connecting to the network.</summary>
 internal static class AddressSuggestions
 {
     private static readonly ImmutableArray<string> s_virtualMarkers =
@@ -18,9 +18,10 @@ internal static class AddressSuggestions
         IPAddress? localAddress,
         IReadOnlyList<TlsCaMdnsScope>? scopes,
         IEnumerable<NetworkSnapshot> networks,
-        int httpPort)
+        int port,
+        bool https = false)
     {
-        if (httpPort <= 0)
+        if (port <= 0)
         {
             return [];
         }
@@ -50,7 +51,7 @@ internal static class AddressSuggestions
             .Distinct()
             .OrderBy(static address => address.AddressFamily)
             .ThenBy(static address => Convert.ToHexString(address.GetAddressBytes()), StringComparer.Ordinal)
-            .Select(address => Format(address, httpPort))];
+            .Select(address => Format(address, port, https))];
 
         static bool IsEligibleNetwork(NetworkSnapshot network) => network.IsUp
             && network.HasDefaultGateway
@@ -65,10 +66,10 @@ internal static class AddressSuggestions
             return s_virtualMarkers.Any(marker => value.Contains(marker, StringComparison.OrdinalIgnoreCase));
         }
 
-        static string Format(IPAddress address, int port)
+        static string Format(IPAddress address, int port, bool https)
         {
             string host = address.AddressFamily == AddressFamily.InterNetworkV6 ? $"[{address}]" : address.ToString();
-            return $"http://{host}:{port}/";
+            return $"{(https ? "https" : "http")}://{host}:{port}/";
         }
 
         static IPAddress? Normalize(IPAddress? address) => address?.IsIPv4MappedToIPv6 == true ? address.MapToIPv4() : address;

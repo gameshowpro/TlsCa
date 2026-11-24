@@ -44,7 +44,8 @@ internal sealed record InfoDocument(
     [property: JsonPropertyName("setupAddress")] string? SetupAddress,
     [property: JsonPropertyName("fallbackAddress")] string? FallbackAddress,
     [property: JsonPropertyName("fallbackAddresses")] string[] FallbackAddresses,
-    [property: JsonPropertyName("allowHttpFallback")] bool AllowHttpFallback)
+    [property: JsonPropertyName("allowHttpFallback")] bool AllowHttpFallback,
+    [property: JsonPropertyName("allowHttpsFallback")] bool AllowHttpsFallback)
 {
     /// <summary>The document for <paramref name="identity"/>, a snapshot of the identity in force.</summary>
     public static InfoDocument Create(TlsIdentity identity, TlsIdentityManager manager, TlsCaOptions options, ITlsCaGate gate, TlsCaStatus status, string[] fallbackAddresses) =>
@@ -67,7 +68,8 @@ internal sealed record InfoDocument(
             options.HttpPort > 0 ? AddressSuggestions.BuildSetupAddress(identity.MdnsName, options.HttpPort) : null,
             fallbackAddresses.Length == 1 ? fallbackAddresses[0] : null,
             fallbackAddresses,
-            options.AllowHttpFallback);
+            options.AllowHttpFallback,
+            options.AllowHttpsFallback);
 }
 
 /// <summary>
@@ -86,10 +88,21 @@ internal sealed record CertificateInfoDocument(
     [property: JsonPropertyName("setupAddress")] string? SetupAddress,
     [property: JsonPropertyName("fallbackAddress")] string? FallbackAddress,
     [property: JsonPropertyName("fallbackAddresses")] string[] FallbackAddresses,
-    [property: JsonPropertyName("allowHttpFallback")] bool AllowHttpFallback);
+    [property: JsonPropertyName("allowHttpFallback")] bool AllowHttpFallback,
+    [property: JsonPropertyName("allowHttpsFallback")] bool AllowHttpsFallback);
 
 /// <summary>The body of a failed renew or reset: a fixed message, never exception text.</summary>
 internal sealed record ErrorDocument([property: JsonPropertyName("error")] string Error);
+
+/// <summary>
+/// The body of the 403 that a gated renew or reset answers: a fixed message and a <c>reason</c> code the management page
+/// uses to choose its wording. The library has one refusal point (the pluggable <see cref="ITlsCaGate"/> says only yes or
+/// no), so the code is always <c>refused</c>; the ESP32 firmware, which checks the Host, the Origin and its boot window
+/// itself, answers <c>host</c>, <c>origin</c> or <c>gate-closed</c> in the same shape.
+/// </summary>
+internal sealed record RefusalDocument(
+    [property: JsonPropertyName("error")] string Error,
+    [property: JsonPropertyName("reason")] string Reason);
 
 /// <summary>
 /// The body of the 503 that <c>info.json</c> answers while no identity is in force: a fixed message (never the reason,
@@ -108,12 +121,14 @@ internal sealed record UnavailableDocument(
     [property: JsonPropertyName("setupAddress")] string? SetupAddress,
     [property: JsonPropertyName("fallbackAddress")] string? FallbackAddress,
     [property: JsonPropertyName("fallbackAddresses")] string[] FallbackAddresses,
-    [property: JsonPropertyName("allowHttpFallback")] bool AllowHttpFallback);
+    [property: JsonPropertyName("allowHttpFallback")] bool AllowHttpFallback,
+    [property: JsonPropertyName("allowHttpsFallback")] bool AllowHttpsFallback);
 
 /// <summary>Source-generated serialization, so the field names cannot drift and nothing is found by reflection.</summary>
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.Never, WriteIndented = false)]
 [JsonSerializable(typeof(InfoDocument))]
 [JsonSerializable(typeof(CertificateInfoDocument))]
 [JsonSerializable(typeof(ErrorDocument))]
+[JsonSerializable(typeof(RefusalDocument))]
 [JsonSerializable(typeof(UnavailableDocument))]
 internal sealed partial class TlsCaJsonContext : JsonSerializerContext;

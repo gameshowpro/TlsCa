@@ -74,6 +74,8 @@ jobs:
           .venv/bin/pip install --quiet mkdocs-material
       - name: Render and build examples
         run: .venv/bin/python docs/check_examples.py
+      - name: Check management page behavior
+        run: node tests/management-page.test.cjs
 
   package:
     name: Pack and inspect

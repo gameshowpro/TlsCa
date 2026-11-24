@@ -427,6 +427,82 @@ public sealed class PipelineTests
     }
 
     [TestMethod]
+    public async Task HttpsFallbackCookie_SuppressesOnlyWrongHostHttpsRedirect()
+    {
+        await using App app = await Start(configure: static options => options.AllowHttpFallback = false);
+        using HttpClient client = app.Web.GetTestClient();
+        using HttpRequestMessage https = new(HttpMethod.Get, "https://192.168.1.20:9190/settings?q=1");
+        _ = https.Headers.TryAddWithoutValidation("Accept", "text/html");
+        _ = https.Headers.TryAddWithoutValidation("Cookie", "gsp-tlsca-https=1");
+        using HttpResponseMessage continued = await client.SendAsync(https);
+        Assert.AreEqual(HttpStatusCode.OK, continued.StatusCode);
+        Assert.AreEqual("fallback GET /settings", await continued.Content.ReadAsStringAsync());
+
+        using HttpRequestMessage http = new(HttpMethod.Get, "http://192.168.1.20:9090/settings?q=1");
+        _ = http.Headers.TryAddWithoutValidation("Accept", "text/html");
+        _ = http.Headers.TryAddWithoutValidation("Cookie", "gsp-tlsca-https=1");
+        using HttpResponseMessage redirected = await client.SendAsync(http);
+        Assert.AreEqual(HttpStatusCode.Found, redirected.StatusCode);
+        Assert.AreEqual($"http://192.168.1.20:9090{Prefix}/?returnTo=%2Fsettings%3Fq%3D1", redirected.Headers.Location?.OriginalString);
+
+        using HttpRequestMessage root = new(HttpMethod.Get, "http://192.168.1.20:9090/");
+        _ = root.Headers.TryAddWithoutValidation("Cookie", "gsp-tlsca-https=1");
+        using HttpResponseMessage rootRedirect = await client.SendAsync(root);
+        Assert.AreEqual(HttpStatusCode.Found, rootRedirect.StatusCode);
+        Assert.AreEqual($"http://192.168.1.20:9090{Prefix}/?returnTo=%2F", rootRedirect.Headers.Location?.OriginalString);
+    }
+
+    [TestMethod]
+    [DataRow(false, "gsp-tlsca-https=1")]
+    [DataRow(true, "gsp-tlsca-https=0")]
+    [DataRow(true, "gsp-tlsca-http=1")]
+    public async Task HttpsFallbackCookie_RequiresOptionAndItsOwnValue(bool allowHttpsFallback, string cookie)
+    {
+        await using App app = await Start(configure: options =>
+        {
+            options.AllowHttpFallback = false;
+            options.AllowHttpsFallback = allowHttpsFallback;
+        });
+        using HttpClient client = app.Web.GetTestClient();
+        using HttpRequestMessage request = new(HttpMethod.Get, "https://192.168.1.20:9190/settings");
+        _ = request.Headers.TryAddWithoutValidation("Accept", "text/html");
+        _ = request.Headers.TryAddWithoutValidation("Cookie", cookie);
+        using HttpResponseMessage response = await client.SendAsync(request);
+        Assert.AreEqual(HttpStatusCode.Found, response.StatusCode);
+        Assert.AreEqual($"https://192.168.1.20:9190{Prefix}/?returnTo=%2Fsettings", response.Headers.Location?.OriginalString);
+    }
+
+    [TestMethod]
+    [DataRow("http://localhost:9090/settings")]
+    [DataRow("https://localhost:9190/settings")]
+    public async Task HttpsFallbackCookie_DoesNotChangeLocalhost(string url)
+    {
+        await using App app = await Start();
+        using HttpClient client = app.Web.GetTestClient();
+        using HttpRequestMessage request = new(HttpMethod.Get, url);
+        _ = request.Headers.TryAddWithoutValidation("Accept", "text/html");
+        _ = request.Headers.TryAddWithoutValidation("Cookie", "gsp-tlsca-https=1");
+        using HttpResponseMessage response = await client.SendAsync(request);
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [TestMethod]
+    [DataRow("renew")]
+    [DataRow("reset")]
+    public async Task HttpsFallbackCookie_DoesNotBypassManagementGate(string action)
+    {
+        await using App app = await Start(configure: static options => options.AllowHttpFallback = false);
+        using HttpClient client = app.Web.GetTestClient();
+        using HttpRequestMessage request = new(HttpMethod.Post, $"https://192.168.1.20:9190{Prefix}/{action}")
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        };
+        _ = request.Headers.TryAddWithoutValidation("Cookie", "gsp-tlsca-https=1");
+        using HttpResponseMessage response = await client.SendAsync(request);
+        Assert.AreEqual(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [TestMethod]
     [DataRow("renew")]
     [DataRow("reset")]
     public async Task BuiltInFallbackCookie_DoesNotBypassManagementGate(string action)

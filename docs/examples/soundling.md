@@ -12,6 +12,8 @@ https_guide:
   name_pattern: <host>-soundling.local
   name_example: studio-pc-soundling.local
   gate: loopback
+  allow_http_fallback: false
+  allow_https_fallback: true
   own_certificate: true
   settings_prefix: Soundling
   storage:

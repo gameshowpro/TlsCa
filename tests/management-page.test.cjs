@@ -3,7 +3,7 @@ const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 let source = fs.readFileSync(path.join(__dirname, '..', 'src', 'GameshowPro.TlsCa', 'wwwroot', 'management.html'), 'utf8').split('<script>')[1].split('</script>')[0];
-source = source.replace('  fetch(P + "info.json", { cache: "no-store" })', '  globalThis.page = { safeReturnTo, secureDestination, sameHostHttpDestination, render, probe };\n  fetch(P + "info.json", { cache: "no-store" })');
+source = source.replace('  fetch(P + "info.json", { cache: "no-store" })', '  globalThis.page = { safeReturnTo, secureDestination, sameHostHttpDestination, sameHostHttpsDestination, render, probe };\n  fetch(P + "info.json", { cache: "no-store" })');
 const nodes = new Map();
 class Element {
   constructor(tag) { this.tagName = tag; this.children = []; this.hidden = true; this.style = {}; this.textContent = ''; this.listeners = {}; this.firstChild = null; }
@@ -16,7 +16,7 @@ class Element {
 }
 const document = { title: '', cookie: '', createElement: tag => new Element(tag), getElementById: id => { if (!nodes.has(id)) nodes.set(id, new Element(id)); return nodes.get(id); } };
 let calls = [], replaced = null, assigned = null, copied = null;
-const info = { product:'App', mdnsName:'show.local', httpsPort:9443, caFingerprintSha256:'AA:BB', caNotAfter:4102444800, leafNotBefore:1700000000, leafNotAfter:4102444800, gate:'loopback', secureAddress:'https://show.local:9443/', setupAddress:'http://show.local:8080/', fallbackAddress:'http://192.168.1.5:8080/', allowHttpFallback:true };
+const info = { product:'App', mdnsName:'show.local', httpsPort:9443, caFingerprintSha256:'AA:BB', caNotAfter:4102444800, leafNotBefore:1700000000, leafNotAfter:4102444800, gate:'loopback', secureAddress:'https://show.local:9443/', setupAddress:'http://show.local:8080/', fallbackAddress:'http://192.168.1.5:8080/', allowHttpFallback:true, allowHttpsFallback:true };
 const location = { protocol:'http:', hostname:'show.local', host:'show.local:9090', origin:'http://show.local:9090', port:'9090', search:'?returnTo=%2Fshows%2F1%3Fview%3Dlive', replace: value => { replaced = value; }, assign: value => { assigned = value; } };
 const context = { document, location, navigator:{userAgent:'Windows',clipboard:{writeText:async(value)=>{copied=value;}}}, URL, URLSearchParams, AbortController, Date, console, confirm:()=>true, setTimeout:()=>1, clearTimeout:()=>{}, setInterval:()=>1, clearInterval:()=>{}, fetch: async (url)=> { calls.push(url); return {ok:true,json:async()=>info}; } };
 vm.runInNewContext(source, context);
@@ -33,6 +33,7 @@ vm.runInNewContext(source, context);
   location.search = '?returnTo=%2Fshows%2F1%3Fview%3Dlive';
   location.protocol='https:'; location.hostname='other.local'; location.origin='https://other.local:9443'; location.port='9443';
   assert.equal(context.page.sameHostHttpDestination(info),'http://other.local:8080/shows/1?view=live');
+  assert.equal(context.page.sameHostHttpsDestination(info),'https://other.local:9443/shows/1?view=live');
   context.page.render(info);
   assert.equal(nodes.get('other-computers').hidden,true);
   location.protocol='http:';location.hostname='localhost';location.origin='http://localhost:8080';location.port='8080';
@@ -41,6 +42,17 @@ vm.runInNewContext(source, context);
   assert.equal(nodes.get('share-address').textContent,info.secureAddress);
   assert.equal(nodes.get('setup-address').textContent,info.setupAddress);
   assert.equal(nodes.get('fallback-block').hidden,false);
+  assert.match(nodes.get('fallback-help').textContent,/plain HTTP addresses/);
+  assert.match(nodes.get('fallback-note').textContent,/still needs .local name resolution/);
+  const secureFallback = {...info,allowHttpFallback:false,fallbackAddress:'https://192.168.1.5:9443/',fallbackAddresses:['https://192.168.1.5:9443/','https://10.0.0.5:9443/']};
+  context.page.render(secureFallback);
+  assert.deepEqual(nodes.get('fallback-addresses').children.map(item=>item.children[0].textContent),secureFallback.fallbackAddresses);
+  assert.match(nodes.get('fallback-help').textContent,/HTTPS addresses/);
+  assert.match(nodes.get('fallback-help').textContent,/certificate warning/);
+  assert.match(nodes.get('fallback-note').textContent,/Continue on this address/);
+  context.page.render({...secureFallback,allowHttpsFallback:false});
+  assert.doesNotMatch(nodes.get('fallback-note').textContent,/Continue on this address/);
+  context.page.render(info);
   assert.deepEqual(nodes.get('fallback-addresses').children.map(item=>item.children[0].textContent),[info.fallbackAddress]);
   const multiple = {...info,fallbackAddresses:['http://192.168.1.5:8080/','http://10.0.0.5:8080/']};
   context.page.render(multiple);
@@ -64,23 +76,347 @@ vm.runInNewContext(source, context);
   context.page.render(info);
   location.protocol='https:'; location.hostname='other.local'; location.origin='https://other.local:9443'; location.port='9443';
   context.fetch = async () => { throw new Error('DNS unavailable'); };
+  const soundlingInfo = {...info,allowHttpFallback:false};
+  context.page.render(soundlingInfo);
+  context.page.probe(soundlingInfo);
+  assert.equal(nodes.get('https-fallback').hidden,true,'never offered before the probe fails');
+  nodes.get('continue-https').listeners.click({preventDefault(){}});
+  assert.equal(assigned,null,'the HTTPS action cannot run before the failed probe');
+  assert.equal(document.cookie,'');
+  for(let i=0;i<8;i++) await Promise.resolve();
+  assert.equal(nodes.get('http-fallback').hidden,true,'the HTTPS escape is independent of HTTP fallback');
+  assert.equal(nodes.get('https-fallback').hidden,false);
+  nodes.get('continue-https').listeners.click({preventDefault(){}});
+  assert.equal(document.cookie,'gsp-tlsca-https=1; Path=/; SameSite=Lax; Secure');
+  assert.equal(assigned,'https://other.local:9443/shows/1?view=live');
+  assert.doesNotMatch(document.cookie,/Max-Age|Expires/,'the HTTPS exception ends with this browser session');
+  location.search = '?returnTo='+encodeURIComponent('//evil.example/');
+  assigned = null;
+  nodes.get('continue-https').listeners.click({preventDefault(){}});
+  assert.equal(assigned,'https://other.local:9443/','an unsafe returnTo cannot change hosts');
+  location.search = '?returnTo=%2Fshows%2F1%3Fview%3Dlive';
+  context.page.probe({...soundlingInfo,allowHttpsFallback:undefined});
+  for(let i=0;i<8;i++) await Promise.resolve();
+  assert.equal(nodes.get('https-fallback').hidden,true,'older firmware without the new field does not offer an unsupported bypass');
+  context.page.probe({...soundlingInfo,allowHttpsFallback:false});
+  for(let i=0;i<8;i++) await Promise.resolve();
+  assert.equal(nodes.get('https-fallback').hidden,true,'apps can switch off the HTTPS escape');
+  location.protocol='http:';location.origin='http://other.local:8080';location.port='8080';
+  assert.equal(context.page.sameHostHttpsDestination(info),null);
+  context.page.probe(soundlingInfo);
+  for(let i=0;i<8;i++) await Promise.resolve();
+  assert.equal(nodes.get('https-fallback').hidden,true,'the escape requires an HTTPS page');
+  location.protocol='https:';location.hostname='localhost';location.origin='https://localhost:9443';location.port='9443';
+  assert.equal(context.page.sameHostHttpsDestination(info),null);
+  context.page.probe(soundlingInfo);
+  for(let i=0;i<8;i++) await Promise.resolve();
+  assert.equal(nodes.get('https-fallback').hidden,true,'localhost never offers the HTTPS escape');
+  location.hostname='show.local';location.origin='https://show.local:9443';
+  context.page.probe(soundlingInfo);
+  assert.equal(nodes.get('https-fallback').hidden,true,'the canonical HTTPS address never offers an escape');
+  location.origin='https://show.local:9555';location.port='9555';
+  assert.equal(context.page.sameHostHttpsDestination(info),null,'a different port on the canonical host does not qualify');
+  context.page.probe(soundlingInfo);
+  for(let i=0;i<8;i++) await Promise.resolve();
+  assert.equal(nodes.get('https-fallback').hidden,true,'a failed probe on the canonical hostname does not offer the escape');
+  location.hostname='other.local';location.origin='https://other.local:9443';location.port='9443';
+  context.page.render(info);
   context.page.probe(info);
   for(let i=0;i<8;i++) await Promise.resolve();
   assert.equal(nodes.get('http-fallback').hidden,false);
+  assert.equal(nodes.get('https-fallback').hidden,false);
   nodes.get('continue-http').listeners.click({preventDefault(){}});
   assert.equal(document.cookie,'gsp-tlsca-http=1; Path=/; SameSite=Lax');
   assert.equal(assigned,'http://other.local:8080/shows/1?view=live');
   context.page.probe({...info,allowHttpFallback:undefined});
   for(let i=0;i<8;i++) await Promise.resolve();
   assert.equal(nodes.get('http-fallback').hidden,true);
+  assert.equal(nodes.get('https-fallback').hidden,false);
   context.fetch = async () => ({ok:true,json:async()=>info});
   let tick;
   context.setInterval = handler => { tick=handler; return 1; };
   context.page.probe(info);
   for(let i=0;i<5;i++) await Promise.resolve();
   assert.equal(nodes.get('http-fallback').hidden,true);
+  assert.equal(nodes.get('https-fallback').hidden,true,'a successful probe continues to prefer the .local address');
+  assigned = null;
+  nodes.get('continue-https').listeners.click({preventDefault(){}});
+  assert.equal(assigned,null,'a successful probe cannot use the HTTPS bypass');
   assert.equal(typeof tick,'function');
   for(let i=0;i<5;i++) tick();
   assert.equal(replaced,'https://show.local:9443/shows/1?view=live');
-  console.log('Page script: safe paths, QR, localhost address block, fallback gate/cookie, wrong-host trust probe and forward passed.');
+  // Your own certificate (ESP32 firmware only).
+  const settle = async () => { for (let n = 0; n < 4; n++) await new Promise(resolve => setImmediate(resolve)); };
+  const setPage = (protocol) => { location.protocol = protocol; location.hostname = 'show.local'; location.origin = protocol + '//show.local'; location.port = ''; };
+  const fileOf = (text) => ({ text: async () => text, size: text.length });
+  const respond = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => { if (body === undefined) throw new SyntaxError('no body'); return body; }, text: async () => String(body) });
+  const device = { ...info, gate: 'boot', certificateUpload: true, certificateSource: 'ca', certificateDnsNames: ['show.local'], certificateRequestPending: false };
+  const owned = { ...device, certificateSource: 'own', certificateNotAfter: 4102444800, certificateDnsNames: ['show.local', 'show.example.com'] };
+  const text = (id) => nodes.get(id).textContent;
+  const factValues = () => nodes.get('own-facts').children.map(child => child.children[0] ? child.children[0].textContent : child.textContent);
+  const sent = [];
+  const reply = (status, body) => { context.fetch = async (url, options) => { sent.push({ url, options, body: options && options.body ? JSON.parse(options.body) : null }); return respond(status, body); }; };
+  const click = async (id) => { nodes.get(id).listeners.click(); await settle(); };
+
+  setPage('http:');
+  context.page.render(info);
+  assert.equal(nodes.get('own-cert').hidden, true, 'no capability flag: the section stays hidden (.NET library)');
+  context.page.render({ ...info, certificateUpload: false });
+  assert.equal(nodes.get('own-cert').hidden, true);
+
+  context.page.render(device);
+  assert.equal(nodes.get('own-cert').hidden, false);
+  assert.ok(factValues().includes('show.local'));
+  assert.ok(factValues().some(value => /default/.test(value)));
+  assert.ok(factValues().includes('None'), 'no signing request pending');
+  assert.equal(nodes.get('own-key').disabled, true, 'key input disabled on plain HTTP');
+  assert.equal(nodes.get('own-upload').disabled, true);
+  assert.equal(nodes.get('own-key-reason').hidden, false);
+  assert.equal(nodes.get('signed-upload').disabled, true, 'nothing pending yet');
+  assert.equal(nodes.get('own-remove').disabled, true, 'nothing to remove');
+  assert.equal(nodes.get('csr-link').hidden, true);
+  assert.match(text('own-gate'), /within 5 minutes/);
+
+  context.page.render(owned);
+  assert.ok(factValues().some(value => /^Valid until/.test(value)));
+  assert.ok(factValues().includes('show.local, show.example.com'));
+  assert.equal(nodes.get('own-remove').disabled, false);
+  context.page.render({ ...owned, certificateNotAfter: 1700000000 });
+  assert.ok(factValues().some(value => /^Expired/.test(value)));
+  context.page.render({ ...device, certificateRequestPending: true });
+  assert.equal(nodes.get('csr-link').hidden, false);
+  assert.equal(nodes.get('signed-upload').disabled, false);
+  assert.equal(nodes.get('signed-hint').hidden, true);
+  assert.equal(nodes.get('own-remove').disabled, false, 'a pending request can be removed');
+
+  // Over HTTPS the key input is enabled.
+  setPage('https:');
+  context.page.render(device);
+  assert.equal(nodes.get('own-key').disabled, false);
+  assert.equal(nodes.get('own-upload').disabled, false);
+  assert.equal(nodes.get('own-key-reason').hidden, true);
+
+  // Upload certificate and key (HTTPS): one JSON body with time, certificate and key.
+  document.getElementById('own-cert-file').files = [fileOf('CERT-PEM')];
+  nodes.get('own-key').files = [fileOf('KEY-PEM')];
+  sent.length = 0;
+  reply(200, owned);
+  await click('own-upload');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, '/.well-known/gameshowpro/certificate');
+  assert.equal(sent[0].options.method, 'POST');
+  assert.equal(sent[0].options.headers['Content-Type'], 'application/json');
+  assert.equal(typeof sent[0].body.time, 'number');
+  assert.ok(Math.abs(sent[0].body.time - Date.now() / 1000) < 60);
+  assert.equal(sent[0].body.certificate, 'CERT-PEM');
+  assert.equal(sent[0].body.key, 'KEY-PEM');
+  assert.equal(nodes.get('own-result').className, 'ok note');
+  assert.match(text('own-result'), /restarting its secure server/);
+  assert.match(text('own-result'), /reload it/);
+  assert.ok(factValues().includes('Your own certificate'), 'the page shows the fresh info.json');
+
+  // Missing key file: nothing is sent.
+  sent.length = 0;
+  document.getElementById('own-cert-file').files = [fileOf('CERT-PEM')];
+  nodes.get('own-key').files = [];
+  await click('own-upload');
+  assert.equal(sent.length, 0);
+  assert.match(text('own-result'), /Choose the private key file first/);
+
+  // A key is never sent over plain HTTP, even if the handler is reached.
+  setPage('http:');
+  nodes.get('own-key').files = [fileOf('KEY-PEM')];
+  await click('own-upload');
+  assert.equal(sent.length, 0);
+  assert.match(text('own-result'), /secure \(https\) connection/);
+
+  // Signing request (HTTP): body is only the time; the PEM is shown and the download link appears.
+  context.page.render(device);
+  reply(200, '-----BEGIN CERTIFICATE REQUEST-----');
+  await click('csr-make');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, '/.well-known/gameshowpro/certificate/request');
+  assert.deepEqual(Object.keys(sent[0].body), ['time']);
+  assert.equal(nodes.get('csr-text').value, '-----BEGIN CERTIFICATE REQUEST-----');
+  assert.equal(nodes.get('csr-text').hidden, false);
+  assert.equal(nodes.get('csr-link').hidden, false);
+  assert.equal(nodes.get('signed-upload').disabled, false);
+  assert.match(text('own-result'), /Signing request created/);
+
+  // Signed certificate without a key (HTTP).
+  sent.length = 0;
+  document.getElementById('signed-cert-file').files = [fileOf('SIGNED-PEM')];
+  reply(200, owned);
+  await click('signed-upload');
+  assert.equal(sent[0].url, '/.well-known/gameshowpro/certificate');
+  assert.deepEqual(Object.keys(sent[0].body).sort(), ['certificate', 'time']);
+  assert.equal(sent[0].body.certificate, 'SIGNED-PEM');
+  assert.match(text('own-result'), /plain HTTP page is not affected/);
+
+  // Remove.
+  sent.length = 0;
+  reply(200, device);
+  await click('own-remove');
+  assert.equal(sent[0].url, '/.well-known/gameshowpro/certificate/remove');
+  assert.deepEqual(Object.keys(sent[0].body), ['time']);
+  assert.match(text('own-result'), /removed/);
+  assert.equal(nodes.get('csr-text').hidden, true);
+
+  // Errors: the device's own message for 400, 409 and 503; plain words for 403 and 415.
+  document.getElementById('signed-cert-file').files = [fileOf('SIGNED-PEM')];
+  context.page.render({ ...device, certificateRequestPending: true });
+  for (const [status, message] of [[400, 'The private key does not belong to the server certificate.'], [409, 'Conflict text from the device.'], [503, 'The device is short of free memory; try again.']]) {
+    reply(status, { error: message });
+    await click('signed-upload');
+    assert.equal(text('own-result'), message, 'status ' + status);
+    assert.equal(nodes.get('own-result').className, 'bad note');
+  }
+  reply(400, undefined);
+  await click('signed-upload');
+  assert.match(text('own-result'), /status 400/);
+  reply(503, undefined);
+  await click('signed-upload');
+  assert.match(text('own-result'), /short of memory/);
+  reply(403, undefined);
+  await click('signed-upload');
+  assert.match(text('own-result'), /five minutes after the device powered up have passed/);
+  assert.match(text('own-result'), /Power-cycle the device/);
+  reply(403, undefined);
+  await click('csr-make');
+  assert.match(text('own-result'), /Power-cycle the device/);
+  reply(415, undefined);
+  await click('signed-upload');
+  assert.match(text('own-result'), /status 415/);
+  reply(500, undefined);
+  await click('signed-upload');
+  assert.match(text('own-result'), /status 500/);
+
+  // A dropped connection (the HTTPS server restarting) is explained, not shown as an error.
+  setPage('https:');
+  context.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  await click('signed-upload');
+  assert.equal(nodes.get('own-result').className, 'warn note');
+  assert.match(text('own-result'), /restarts its secure server/);
+  assert.match(text('own-result'), /reload this page/);
+
+  // The section follows the capability flag.
+  context.page.render(device);
+  assert.equal(nodes.get('own-cert').hidden, false);
+  context.page.render(info);
+  assert.equal(nodes.get('own-cert').hidden, true);
+
+
+  // The gate countdown (firmware: info.json has gateSecondsRemaining). The page counts down on its own clock and
+  // disables the gated buttons at zero; a device without the field (the .NET library) is unchanged.
+  const RealDate = Date;
+  let fakeNow = RealDate.now();
+  context.Date = class extends RealDate { static now() { return fakeNow; } };
+  let gateTicks = [];
+  context.setInterval = handler => { gateTicks.push(handler); return gateTicks.length; };
+  context.clearInterval = () => {};
+  const advance = (seconds) => { fakeNow += seconds * 1000; if (gateTicks.length) { gateTicks[gateTicks.length - 1](); } };
+  const gated = ['renew', 'reset', 'csr-make', 'signed-upload', 'own-upload', 'own-remove'];
+  setPage('https:');
+  context.page.render({ ...device, certificateRequestPending: true, certificateSource: 'own', gateSecondsRemaining: 125 });
+  assert.match(text('own-gate'), /another 2:05/);
+  assert.match(text('gate'), /another 2:05/);
+  assert.equal(nodes.get('renew').disabled, false);
+  assert.equal(nodes.get('csr-make').disabled, false);
+  advance(65);
+  assert.match(text('own-gate'), /another 1:00/);
+  advance(59);
+  assert.match(text('own-gate'), /another 0:01/);
+  assert.equal(nodes.get('csr-make').disabled, false, 'one second left: still open');
+  advance(1);
+  for (const id of gated) { assert.equal(nodes.get(id).disabled, true, id + ' disabled at zero'); }
+  assert.match(text('own-gate'), /Power-cycle the device/);
+  assert.match(text('own-gate'), /have passed/);
+  assert.match(text('gate'), /Power-cycle the device/);
+  // Already closed at load (not a power-up): disabled at once, no timer needed.
+  context.page.render({ ...device, certificateRequestPending: true, certificateSource: 'own', gateSecondsRemaining: 0 });
+  for (const id of gated) { assert.equal(nodes.get(id).disabled, true, id + ' disabled when closed at load'); }
+  assert.match(text('own-gate'), /Power-cycle the device/);
+  // A fresh info.json with time left (reload after a power cycle) enables them again.
+  context.page.render({ ...device, certificateRequestPending: true, certificateSource: 'own', gateSecondsRemaining: 300 });
+  for (const id of gated) { assert.equal(nodes.get(id).disabled, false, id + ' enabled with time left'); }
+  assert.match(text('own-gate'), /another 5:00/);
+  // No field (the .NET library, an older firmware): the original wording and no disabling.
+  context.page.render({ ...device, certificateRequestPending: true, certificateSource: 'own' });
+  assert.match(text('own-gate'), /within 5 minutes/);
+  assert.equal(nodes.get('renew').disabled, false);
+  assert.equal(nodes.get('own-remove').disabled, false);
+  context.page.render({ ...info, gate: 'loopback', gateSecondsRemaining: 0 });
+  assert.equal(nodes.get('renew').disabled, false, 'only the boot gate counts down');
+
+  // Each 403 reason has its own wording; no body, an unknown reason and the .NET code fall back to the gate's.
+  context.page.render({ ...device, certificateRequestPending: true, gateSecondsRemaining: 200 });
+  const reasons = {
+    'gate-closed': /five minutes after the device powered up have passed/,
+    host: /address the device does not accept as its own/,
+    origin: /different web address/,
+  };
+  for (const [reason, pattern] of Object.entries(reasons)) {
+    context.page.render({ ...device, certificateRequestPending: true, gateSecondsRemaining: 200 });
+    reply(403, { error: 'ignored text', reason });
+    await click('signed-upload');
+    assert.match(text('own-result'), pattern, 'own section, ' + reason);
+    assert.equal(nodes.get('own-result').className, 'bad note');
+    context.page.render({ ...device, certificateRequestPending: true, gateSecondsRemaining: 200 });
+    reply(403, { error: 'ignored text', reason });
+    await click('renew');
+    assert.match(text('result'), pattern, 'renew, ' + reason);
+    assert.equal(nodes.get('result').className, 'bad note');
+  }
+  // gate-closed also closes the page's own gate (its clock was wrong or another session used the window).
+  context.page.render({ ...device, certificateRequestPending: true, gateSecondsRemaining: 200 });
+  reply(403, { error: 'x', reason: 'gate-closed' });
+  await click('csr-make');
+  assert.equal(nodes.get('csr-make').disabled, true);
+  assert.equal(nodes.get('renew').disabled, true);
+  assert.match(text('own-gate'), /have passed/);
+  for (const body of [undefined, { error: 'x', reason: 'refused' }, { error: 'x', reason: 'unheard-of' }, { error: 'x' }, null]) {
+    context.page.render({ ...device, certificateRequestPending: true });
+    reply(403, body);
+    await click('signed-upload');
+    assert.match(text('own-result'), /five minutes after the device powered up have passed, or this page was opened by an address/, 'fallback ' + JSON.stringify(body));
+    reply(403, body);
+    await click('renew');
+    assert.match(text('result'), /power-cycle the device first/, 'renew fallback ' + JSON.stringify(body));
+  }
+
+  // The automatic forward from the HTTP page to HTTPS does not fire while the certificate section is in use.
+  const trusted = async (deviceInfo, use) => {
+    setPage('http:');
+    location.hostname = 'other.local'; location.origin = 'http://other.local'; location.port = '';
+    replaced = null;
+    let tickers = [];
+    const cleared = new Set();
+    context.setInterval = handler => { tickers.push(handler); return tickers.length; };
+    context.clearInterval = id => { cleared.add(id); };
+    context.fetch = async () => ({ ok: true, json: async () => deviceInfo });
+    context.page.render(deviceInfo);
+    context.page.probe(deviceInfo);
+    for (let n = 0; n < 8; n++) await Promise.resolve();
+    if (use) { use(); }
+    for (let n = 0; n < 8; n++) { tickers.forEach((handler, index) => { if (!cleared.has(index + 1)) { handler(); } }); }
+    return tickers.length;
+  };
+  const upload = { ...info, gate: 'boot', certificateUpload: true, certificateSource: 'ca', certificateDnsNames: [], certificateRequestPending: false, gateSecondsRemaining: 250 };
+  await trusted(upload);
+  assert.equal(replaced, 'https://show.local:9443/shows/1?view=live', 'untouched: it still forwards after the countdown');
+  await trusted(upload, () => nodes.get('own-cert').listeners.focusin());
+  assert.equal(replaced, null, 'focus in the section: the page stays');
+  assert.match(nodes.get('probe').children.map(child => child.textContent).join(''), /This device is trusted\. Open the secure page/);
+  await trusted(upload, () => nodes.get('own-cert').listeners.pointerdown());
+  assert.equal(replaced, null, 'a click in the section: the page stays');
+  await trusted({ ...upload, certificateRequestPending: true });
+  assert.equal(replaced, null, 'a pending signing request: the page stays');
+  assert.match(nodes.get('probe').children.map(child => child.textContent).join(''), /Open the secure page/);
+  await trusted({ ...upload, certificateUpload: undefined });
+  assert.equal(replaced, 'https://show.local:9443/shows/1?view=live', 'a device without the capability is unchanged');
+  // Having used the section once, a later probe on the same page does not forward either.
+  await trusted(upload);
+  assert.equal(replaced, null, 'the section was used earlier on this page');
+
+  console.log('Page script: safe paths, QR, localhost address block, fallback gate/cookie, wrong-host trust probe, forward, own-certificate section, gate countdown, 403 reasons and forward suppression passed.');
 })().catch(error => { console.error(error); process.exitCode=1; });

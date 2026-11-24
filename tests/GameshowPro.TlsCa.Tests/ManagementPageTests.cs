@@ -79,8 +79,60 @@ public sealed class ManagementPageTests
         Assert.Contains("MIT License", html);
     }
 
+    /// <summary>
+    /// The own-certificate section is in the shared page but hidden until <c>info.json</c> says <c>certificateUpload: true</c>
+    /// (the ESP32 firmware; this library never sends it), keeps the key input off plain HTTP, and needs no looser policy.
+    /// </summary>
     [TestMethod]
-    public async Task Page_ValidatesCarriedPath_AndOffersSessionHttpOnlyWhenEnabled()
+    public async Task Page_OffersOwnCertificateOnlyWhenTheDeviceReportsTheCapability()
+    {
+        await using TestApp app = await TestApp.Start();
+
+        using HttpResponseMessage response = await app.Client.GetAsync("/.well-known/gameshowpro/");
+        string html = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("id=\"own-cert\" hidden", html);
+        Assert.Contains("box.hidden = !i || i.certificateUpload !== true;", html);
+        Assert.Contains("$(\"own-cert\").hidden = true;", html);
+        Assert.Contains("$(\"own-key\").disabled = !secure;", html);
+        Assert.Contains("if (withKey && location.protocol !== \"https:\")", html);
+        Assert.Contains("ownPost(\"certificate/remove\")", html);
+        Assert.Contains("ownPost(\"certificate/request\")", html);
+        Assert.Contains("certificate/request.csr", html);
+        Assert.Contains("five minutes after the device powered up have passed", html);
+        Assert.Contains("(status 415)", html);
+        Assert.DoesNotContain("<script src", html);
+        Assert.DoesNotContain("<link", html);
+        string policy = response.Headers.GetValues("Content-Security-Policy").Single();
+        Assert.Contains("script-src 'unsafe-inline'", policy);
+        Assert.Contains("default-src 'none'", policy);
+    }
+
+    /// <summary>
+    /// The page counts down the firmware's boot window (<c>gateSecondsRemaining</c>, absent from this library's
+    /// <c>info.json</c>), words a 403 by its <c>reason</c> code, and keeps an HTTP page from forwarding to HTTPS while the
+    /// certificate section is in use. The behavior itself is covered by <c>tests/management-page.test.cjs</c>.
+    /// </summary>
+    [TestMethod]
+    public async Task Page_CountsDownTheGate_WordsRefusalsByReason_AndHoldsTheForwardWhileTheCertificateSectionIsUsed()
+    {
+        await using TestApp app = await TestApp.Start();
+
+        using HttpResponseMessage response = await app.Client.GetAsync("/.well-known/gameshowpro/");
+        string html = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("i.gateSecondsRemaining", html);
+        Assert.Contains("\"gate-closed\"", html);
+        Assert.Contains("reason === \"host\"", html);
+        Assert.Contains("reason === \"origin\"", html);
+        Assert.Contains("$(\"own-cert\").addEventListener(\"focusin\", holdForward);", html);
+        Assert.Contains("Recommended: create a signing request first.", html);
+        Assert.Contains("RSA key", html);
+        Assert.DoesNotContain("<script src", html);
+    }
+
+    [TestMethod]
+    public async Task Page_ValidatesCarriedPath_AndOffersSessionFallbacksOnlyWhenEnabled()
     {
         await using TestApp app = await TestApp.Start();
 
@@ -91,10 +143,20 @@ public sealed class ManagementPageTests
         Assert.Contains("target.origin === setup.origin", html);
         Assert.Contains("location.replace(destination);", html);
         Assert.Contains("id=\"http-fallback\" hidden", html);
+        Assert.Contains("id=\"https-fallback\" hidden", html);
         Assert.Contains("i.allowHttpFallback !== true", html);
+        Assert.Contains("i.allowHttpsFallback === true", html);
         Assert.Contains("info.allowHttpFallback !== true", html);
+        Assert.Contains("info.allowHttpsFallback !== true", html);
         Assert.Contains("document.cookie = \"gsp-tlsca-http=1; Path=/; SameSite=Lax\"", html);
+        Assert.Contains("document.cookie = \"gsp-tlsca-https=1; Path=/; SameSite=Lax; Secure\"", html);
+        Assert.Contains("location.protocol !== \"https:\" || isLoopback()", html);
+        Assert.Contains("base.hostname.toLowerCase() === new URL(httpsUrl(i)).hostname.toLowerCase()", html);
+        Assert.Contains("!httpsEscapeReady", html);
+        Assert.Contains("target.origin === base.origin", html);
         Assert.Contains("location.assign(destination);", html);
         Assert.Contains("location.origin === new URL(url).origin", html);
+        Assert.Contains("tap Install anyway, then pick the downloaded file", html);
+        Assert.Contains("do not open it from the download notification", html);
     }
 }

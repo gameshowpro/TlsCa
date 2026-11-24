@@ -16,7 +16,7 @@ public sealed class HttpSurfaceTests
     [
         "product", "name", "mdnsName", "httpsPort", "caFingerprintSha256", "previousCaFingerprintSha256", "leafNotBefore",
         "leafNotAfter", "caNotAfter", "version", "gate", "nameConflict", "nameMismatch", "certificateSource",
-        "secureAddress", "setupAddress", "fallbackAddress", "fallbackAddresses", "allowHttpFallback",
+        "secureAddress", "setupAddress", "fallbackAddress", "fallbackAddresses", "allowHttpFallback", "allowHttpsFallback",
     ];
 
     [TestMethod]
@@ -250,6 +250,23 @@ public sealed class HttpSurfaceTests
         Assert.AreEqual(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.AreEqual("no-store", response.Headers.CacheControl?.ToString());
         Assert.AreSame(before, app.Manager.Current);
+    }
+
+    [TestMethod]
+    [DataRow("renew")]
+    [DataRow("reset")]
+    public async Task Post_Refused403_CarriesAJsonBodyWithAReasonCode(string action)
+    {
+        await using TestApp app = await TestApp.Start();
+
+        using HttpResponseMessage response = await app.PostJson($"{Prefix}/{action}", request => request.Headers.Add(TestApp.RemoteHeader, "192.168.1.50"));
+
+        Assert.AreEqual(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.AreEqual("application/json", response.Content.Headers.ContentType?.MediaType);
+        using JsonDocument body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.AreEqual("refused", body.RootElement.GetProperty("reason").GetString());
+        Assert.IsFalse(string.IsNullOrWhiteSpace(body.RootElement.GetProperty("error").GetString()));
+        Assert.AreEqual(2, body.RootElement.EnumerateObject().Count());
     }
 
     [TestMethod]

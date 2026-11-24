@@ -43,8 +43,11 @@ In the certificate page's address, `<host>` is the device's name or IP address. 
 {% if builds | selectattr('local_access') | list %}
 On builds that can be opened locally, find the address for another computer by opening the certificate page on the computer running {{ product }}, using its `localhost` address. **Address for other computers** shows the secure address with a **Copy secure address** button. Share that address with computers that already trust the CA. Scan the QR code on a phone to open the plain-HTTP setup address first; the phone can install the CA before the page forwards it to HTTPS. The secure address is shown as text on the host computer because that computer may not trust its own CA.
 
-The block also lists plain-HTTP IP addresses for the selected networks when available. If several are listed, use the address on the network shared with the other computer. Use it to reach setup on networks where `.local` names do not resolve. An IP address cannot make the built-in HTTPS certificate valid; the secure address still needs `.local` lookup.
+{% for b in builds if b.local_access %}
+{% if single %}The block{% else %}For {{ b.name }}, the block{% endif %} also lists {% if b.allow_http_fallback %}plain-HTTP IP addresses{% else %}HTTPS IP addresses{% endif %} for the selected networks when available. If several are listed, use the address on the network shared with the other computer.{% if b.allow_http_fallback or b.allow_https_fallback %} Use one on networks where `.local` names do not resolve.{% else %} These addresses reach setup; opening the {{ ui_name }} still needs `.local` lookup.{% endif %}{% if not b.allow_http_fallback %} The browser shows a certificate-name warning for an HTTPS IP address.{% if b.allow_https_fallback %} After you accept it, the certificate page checks the `.local` address and offers **Continue on this address** if that check fails.{% endif %}{% endif %}
+{% endfor %}
 {% endif %}
+{{ '\n' }}
 
 ## Set up a computer or phone
 
@@ -60,14 +63,14 @@ Do this once on each computer or phone that opens the {{ ui_name }}.
     | Windows | Open the downloaded file, choose **Install Certificate**, and place it in **Trusted Root Certification Authorities**. |
     | macOS | Add the file to the **System** keychain in Keychain Access, open it, and set it to **Always Trust**. |
     | iPhone and iPad | Download the profile in Safari, install it in **Settings**, then turn on full trust under **General**, **About**, **Certificate Trust Settings**. |
-    | Android | In **Settings**, search for **Install a certificate**, choose **CA certificate**, and pick the downloaded file. |
+    | Android | Download the certificate. On Android 11 or later, do not open it from the download notification: open **Settings**, search for **Install a certificate**, choose **CA certificate**, tap **Install anyway**, and pick the downloaded file. |
     | Linux | Add the file to the system's trusted certificates, and import it into Chrome or Firefox, which keep their own lists. |
 
 4. **Open the secure address.** Once the browser trusts the CA, the certificate page forwards you there by itself after a short countdown.
 
 Later visits need only the secure address. Bookmark it.
 
-If the check fails, install the certificate as described above. On apps that support plain HTTP, a secondary **Continue over HTTP** link also lets you use the original page without encryption for this browser session. This can help when `.local` names cannot be found. Apps that require HTTPS do not offer it. Use the app's certificate-page link to return and finish setup later. Closing the browser normally ends the choice, although browsers that restore session cookies may keep it.
+If the check fails, install the certificate as described above.{% if builds | selectattr('allow_http_fallback') | list %} {% if single or (builds | rejectattr('allow_http_fallback') | list | length == 0) %}A{% else %}On {{ builds | selectattr('allow_http_fallback') | map(attribute='name') | join(' and ') }}, a{% endif %} secondary **Continue over HTTP** link lets you use the original page without encryption for this browser session. This can help when `.local` names cannot be found.{% endif %}{% if builds | selectattr('allow_https_fallback') | list %} {% if single or (builds | rejectattr('allow_https_fallback') | list | length == 0) %}If you opened{% else %}On {{ builds | selectattr('allow_https_fallback') | map(attribute='name') | join(' and ') }}, if you opened{% endif %} the certificate page through HTTPS by IP or another name, **Continue on this address** lets you stay on that HTTPS address for this browser session after the `.local` check fails. The browser's certificate-name warning still appears before the page opens; this choice cannot remove it.{% endif %}{% if (builds | selectattr('allow_http_fallback') | list) or (builds | selectattr('allow_https_fallback') | list) %} Use the app's certificate-page link to return and finish setup later. Closing the browser normally ends a session choice, although browsers that restore session cookies may keep it.{% endif %}
 
 {% if sections.setup is defined %}
 {{ sections.setup }}
@@ -76,9 +79,9 @@ If the check fails, install the certificate as described above. On apps that sup
 
 ## What to know
 
-- **The certificate is valid for one name only.** It works for the secure address in the table and for nothing else: not the bare computer name, not an IP address, and not `localhost`. An address such as `https://192.168.1.20{{ ":" ~ builds[0].https_port if builds[0].https_port != 443 else "" }}/` shows a certificate error even after the CA is installed. Always use the `.local` name. If you continue past a warning at another HTTPS name, the certificate page checks the matching `.local` name before forwarding you with the same path and query; it cannot prevent that first warning. `localhost` is left alone.
+- **The certificate is valid for one name only.** It works for the secure address in the table and for nothing else: not the bare computer name, not an IP address, and not `localhost`. An address such as `https://192.168.1.20{{ ":" ~ builds[0].https_port if builds[0].https_port != 443 else "" }}/` shows a certificate warning even after the CA is installed. Use the `.local` name when your computer can find it. If you continue past a warning at another HTTPS name, the certificate page checks the matching `.local` name before forwarding you with the same path and query; it cannot prevent that first warning. `localhost` is left alone.
 - **The CA cannot be misused for other sites.** It is restricted to that one name, so it cannot vouch for a bank, a mail server or any other address, even if someone stole its key. You install only the public certificate; no private key ever leaves {{ product }}.
-- **Your computer or phone must be able to find `.local` names.** Windows 10 and later, macOS, iPhone, iPad and most Linux desktops can. Android can from version 12. Some Linux systems need `avahi-daemon` and `libnss-mdns`. The lookup uses mDNS (UDP port 5353, multicast), so it fails across routers, on guest Wi-Fi that isolates devices from each other, and through a firewall that blocks multicast.
+- **The warning-free address needs `.local` lookup.** Windows 10 and later, macOS, iPhone, iPad and most Linux desktops can find `.local` names. Android can from version 12. Some Linux systems need `avahi-daemon` and `libnss-mdns`. The lookup uses mDNS (UDP port 5353, multicast), so it fails across routers, on guest Wi-Fi that isolates devices from each other, and through a firewall that blocks multicast.{% if builds | selectattr('allow_https_fallback') | list %} On builds that offer **Continue on this address**, HTTPS by IP can still work after you accept the browser's certificate-name warning.{% endif %}{{ '\n' }}
 - **Firewall.** The {{ product }} {{ single.host_term if single else 'device' }} must accept connections from your network on {% if single %}TCP ports {{ single.http_port }} and {{ single.https_port }}{% else %}the TCP ports in the table{% endif %}, and mDNS on UDP port 5353.{% if links.firewall is defined %} See [firewall settings]({{ links.firewall }}).{% endif %}
 
 - **Firefox keeps its own list of trusted certificates.** Import the file into Firefox as well (**Settings**, **Privacy & Security**, **View Certificates**, **Authorities**), or on Windows turn on `security.enterprise_roots.enabled` in `about:config`.
@@ -135,6 +138,8 @@ The **Renew certificate** and **Reset identity** buttons are on the certificate 
 - **With the device's button{{ who }}.** Press the button on the device, then press the button on the page within 60 seconds.
 {% endif %}
 {% endfor %}
+
+A device that can take a certificate from your own authority shows one more section on the certificate page, **Your own certificate**. It lists which certificate the device serves and its names, and lets you upload a certificate with its private key (over HTTPS only), create a signing request and upload the signed certificate (which also works over plain HTTP), or remove your certificate. These changes use the same protection as Renew and Reset; where the device reports how long its five-minute window after power-up stays open, the page counts it down and disables the buttons when it ends. The page recommends the signing request first (the device's key is an elliptic-curve key) and warns that an uploaded RSA key makes every secure connection slower to set up. The section does not appear on devices that do not report this ability.
 
 ## If the device is renamed, or two devices share a name
 

@@ -25,6 +25,9 @@ internal static partial class TlsCaEndpoints
     private const string UnavailableMessage =
         "The TLS identity cannot be used; see the application log. A gated reset creates a new one.";
 
+    private const string RefusedMessage = "This request was refused: renewing or resetting is not allowed from here.";
+    private const string RefusedReason = "refused";
+
     /// <summary>The paths below <see cref="TlsCaPaths.WellKnownPrefix"/> that are served; <c>/</c> is the page.</summary>
     public static readonly ImmutableArray<string> Paths = ["/", "/ca.crt", "/ca.pem", "/ca.mobileconfig", "/info.json", "/renew", "/reset"];
 
@@ -138,6 +141,7 @@ internal static partial class TlsCaEndpoints
                     status.SetupAddress,
                     fallbackAddresses.Length == 1 ? fallbackAddresses[0] : null,
                     fallbackAddresses,
+                    false,
                     false);
                 return Results.Json(document, TlsCaJsonContext.Default.CertificateInfoDocument);
             }
@@ -159,7 +163,7 @@ internal static partial class TlsCaEndpoints
 
                 TlsCaOptions options = services.GetRequiredService<TlsCaOptions>();
                 string[] fallbackAddresses = FallbackAddresses(context, options);
-                UnavailableDocument unavailable = new(UnavailableMessage, IdentityUnavailable: true, options.Product, options.HttpsPort, options.Version, services.GetRequiredService<ITlsCaGate>().Kind, CertificateSources.Ca, null, null, fallbackAddresses.Length == 1 ? fallbackAddresses[0] : null, fallbackAddresses, options.AllowHttpFallback);
+                UnavailableDocument unavailable = new(UnavailableMessage, IdentityUnavailable: true, options.Product, options.HttpsPort, options.Version, services.GetRequiredService<ITlsCaGate>().Kind, CertificateSources.Ca, null, null, fallbackAddresses.Length == 1 ? fallbackAddresses[0] : null, fallbackAddresses, options.AllowHttpFallback, options.AllowHttpsFallback);
                 return Results.Json(unavailable, TlsCaJsonContext.Default.UnavailableDocument, statusCode: StatusCodes.Status503ServiceUnavailable);
             }
         }
@@ -209,7 +213,9 @@ internal static partial class TlsCaEndpoints
 
     private static string[] FallbackAddresses(HttpContext context, TlsCaOptions options)
     {
-        if (options.HttpPort <= 0)
+        bool https = !options.AllowHttpFallback && options.HttpsPort > 0;
+        int port = https ? options.HttpsPort : options.HttpPort;
+        if (port <= 0)
         {
             return [];
         }
@@ -217,13 +223,13 @@ internal static partial class TlsCaEndpoints
         IReadOnlyList<TlsCaMdnsScope>? scopes = options.MdnsScopes;
         if (scopes is not null)
         {
-            return AddressSuggestions.FallbackAddresses(context.Connection.LocalIpAddress, scopes, [], options.HttpPort);
+            return AddressSuggestions.FallbackAddresses(context.Connection.LocalIpAddress, scopes, [], port, https);
         }
 
-        string[] direct = AddressSuggestions.FallbackAddresses(context.Connection.LocalIpAddress, null, [], options.HttpPort);
+        string[] direct = AddressSuggestions.FallbackAddresses(context.Connection.LocalIpAddress, null, [], port, https);
         return direct.Length > 0
             ? direct
-            : AddressSuggestions.FallbackAddresses(null, null, AddressSuggestions.OperationalNetworks(), options.HttpPort);
+            : AddressSuggestions.FallbackAddresses(null, null, AddressSuggestions.OperationalNetworks(), port, https);
     }
 
     private static Task<IResult> Change(HttpContext context, IServiceProvider services, bool reset) =>
@@ -262,7 +268,7 @@ internal static partial class TlsCaEndpoints
         if (!allowed)
         {
             LogRefused(logger, action, context.Connection.RemoteIpAddress?.ToString() ?? "unknown");
-            return Results.StatusCode(StatusCodes.Status403Forbidden);
+            return Results.Json(new RefusalDocument(RefusedMessage, RefusedReason), TlsCaJsonContext.Default.RefusalDocument, statusCode: StatusCodes.Status403Forbidden);
         }
 
         // The time in the body is accepted for wire compatibility with the ESP32 and ignored: a PC has a clock.

@@ -114,6 +114,14 @@ public sealed class TlsCaOptions
     public bool AllowHttpFallback { get; set; } = true;
 
     /// <summary>
+    /// Let a browser continue on a non-canonical HTTPS host after the management page's trust probe fails.
+    /// When true (the default), a session cookie named <c>gsp-tlsca-https</c> with value <c>1</c> suppresses
+    /// only the built-in CA's wrong-host HTTPS navigation redirect. The page sets this cookie over HTTPS with
+    /// <c>Secure</c>. HTTP navigation redirects, management endpoints and the gate are unaffected.
+    /// </summary>
+    public bool AllowHttpsFallback { get; set; } = true;
+
+    /// <summary>
     /// The earliest time used for issuing: a system clock earlier than this is treated as this time. Defaults to
     /// <see cref="DefaultMinimumTime"/>, the library's build time.
     /// </summary>

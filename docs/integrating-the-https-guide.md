@@ -34,6 +34,8 @@ https_guide:
   https_port: 9196
   name_pattern: <host>-soundling.local
   name_example: studio-pc-soundling.local
+  allow_http_fallback: false
+  allow_https_fallback: true
 ---
 
 # Open the console over HTTPS
@@ -133,6 +135,8 @@ Values of a build. With one build, give them at the top level:
 | `auto_renew` | | `true` | Whether the build renews its certificate by itself. The .NET integration does; firmware with no clock cannot. The guide words the renewal section for each build. |
 | `local_access` | | `true` | Whether a browser can run on the device itself and open `localhost`. Without it, the guide shows no `localhost` address for the build and, with the `loopback` gate, explains the SSH tunnel and `curl` only. |
 | `http_redirects` | | `true` | Whether opening the plain HTTP address from another computer leads to the certificate page (`RedirectHttpRoot`). |
+| `allow_http_fallback` | | `true` | Whether a failed trust check offers **Continue over HTTP** (`TlsCaOptions.AllowHttpFallback`). Set false for a browser UI that needs HTTPS. |
+| `allow_https_fallback` | | `true` | Whether a failed trust check on a non-`localhost`, noncanonical HTTPS address offers **Continue on this address** (`TlsCaOptions.AllowHttpsFallback`). Set false for firmware that has not implemented this escape. |
 | `own_certificate` | | `false` | Whether the build can serve a certificate the user supplies through the `CertificatePath` settings. The .NET integration can. The guide then includes its "Use your own certificate" section. |
 | `storage` | | | Where the keys are kept: a path, or a list of `where` and `path` pairs for several systems. Leave it out when users cannot reach the storage. |
 

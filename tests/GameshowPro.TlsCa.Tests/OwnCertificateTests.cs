@@ -14,8 +14,8 @@ public sealed class OwnCertificateTests
     private const string DnsName = "server.example.test";
     private const string Password = "pfx-pass-7f3a";
 
-    private static readonly string[] s_ownInfoFields = ["product", "httpsPort", "version", "certificateSource", "certificateNotAfter", "certificateDnsNames", "secureAddress", "setupAddress", "fallbackAddress", "fallbackAddresses", "allowHttpFallback"];
-    private static readonly string[] s_plainInfoFields = ["product", "httpsPort", "version", "certificateSource", "secureAddress", "setupAddress", "fallbackAddress", "fallbackAddresses", "allowHttpFallback"];
+    private static readonly string[] s_ownInfoFields = ["product", "httpsPort", "version", "certificateSource", "certificateNotAfter", "certificateDnsNames", "secureAddress", "setupAddress", "fallbackAddress", "fallbackAddresses", "allowHttpFallback", "allowHttpsFallback"];
+    private static readonly string[] s_plainInfoFields = ["product", "httpsPort", "version", "certificateSource", "secureAddress", "setupAddress", "fallbackAddress", "fallbackAddresses", "allowHttpFallback", "allowHttpsFallback"];
 
     // Handshakes
 
@@ -320,6 +320,7 @@ public sealed class OwnCertificateTests
             Assert.AreEqual(mode == NonCaMode.OwnLoaded ? $"https://{DnsName}:9443/" : null, (string?)info["secureAddress"]);
             Assert.IsNull(info["setupAddress"]);
             Assert.AreEqual(false, (bool?)info["allowHttpFallback"]);
+            Assert.AreEqual(false, (bool?)info["allowHttpsFallback"]);
             if (mode == NonCaMode.OwnLoaded)
             {
                 Assert.AreEqual(new DateTimeOffset(chain.Leaf.NotAfter.ToUniversalTime(), TimeSpan.Zero).ToUnixTimeSeconds(), (long?)info["certificateNotAfter"]);

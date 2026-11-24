@@ -7,6 +7,7 @@ public sealed class AddressTests
     private static readonly string[] s_localIpv6 = ["http://[fd00::12]:9090/"];
     private static readonly string[] s_lanAddresses = ["http://10.183.49.101:9090/", "http://10.183.49.102:9090/"];
     private static readonly string[] s_scopedAddresses = ["http://10.147.20.159:9090/", "http://[fd00::12]:9090/"];
+    private static readonly string[] s_scopedHttpsAddresses = ["https://10.147.20.159:9190/", "https://[fd00::12]:9190/"];
 
     [TestMethod]
     public async Task BuiltInStatusAndInfo_ProvideReadyMadeAddresses()
@@ -22,6 +23,7 @@ public sealed class AddressTests
         Assert.AreEqual(app.Status.SecureAddress, (string?)info["secureAddress"]);
         Assert.AreEqual(app.Status.SetupAddress, (string?)info["setupAddress"]);
         Assert.AreEqual(true, (bool?)info["allowHttpFallback"]);
+        Assert.AreEqual(true, (bool?)info["allowHttpsFallback"]);
     }
 
     [TestMethod]
@@ -36,12 +38,49 @@ public sealed class AddressTests
         Assert.IsNull(info["fallbackAddress"]);
         Assert.IsEmpty(info["fallbackAddresses"]!.AsArray());
         Assert.AreEqual(false, (bool?)info["allowHttpFallback"]);
+        Assert.AreEqual(true, (bool?)info["allowHttpsFallback"]);
 
         static void ConfigureOptions(TlsCaOptions options)
         {
             options.HttpPort = 0;
             options.AllowHttpFallback = false;
+            options.MdnsScopes = [];
         }
+    }
+
+    [TestMethod]
+    [DataRow(true, 9443, "http://10.147.20.159:9090/")]
+    [DataRow(false, 9443, "https://10.147.20.159:9443/")]
+    [DataRow(false, 0, "http://10.147.20.159:9090/")]
+    public async Task FallbackAddress_UsesHttpsOnlyWhenHttpFallbackIsOffAndHttpsIsOn(
+        bool allowHttpFallback, int httpsPort, string expected)
+    {
+        await using TestApp app = await TestApp.Start(ConfigureOptions);
+        using HttpResponseMessage response = await app.Get("/.well-known/gameshowpro/info.json");
+        JsonObject info = JsonNode.Parse(await response.Content.ReadAsStringAsync())!.AsObject();
+        Assert.AreEqual(expected, (string?)info["fallbackAddress"]);
+        CollectionAssert.AreEqual(new[] { expected }, info["fallbackAddresses"]!.AsArray().Select(static address => address!.GetValue<string>()).ToArray());
+
+        void ConfigureOptions(TlsCaOptions options)
+        {
+            options.AllowHttpFallback = allowHttpFallback;
+            options.HttpsPort = httpsPort;
+            options.MdnsScopes = [new TlsCaMdnsScope("vpn", IPAddress.Parse("10.147.20.159"))];
+        }
+    }
+
+    [TestMethod]
+    public async Task HttpsFallbackOption_IsReportedIndependently()
+    {
+        await using TestApp app = await TestApp.Start(static options =>
+        {
+            options.AllowHttpFallback = false;
+            options.AllowHttpsFallback = false;
+        });
+        using HttpResponseMessage response = await app.Get("/.well-known/gameshowpro/info.json");
+        JsonObject info = JsonNode.Parse(await response.Content.ReadAsStringAsync())!.AsObject();
+        Assert.AreEqual(false, (bool?)info["allowHttpFallback"]);
+        Assert.AreEqual(false, (bool?)info["allowHttpsFallback"]);
     }
 
     [TestMethod]
@@ -68,6 +107,7 @@ public sealed class AddressTests
         JsonObject info = JsonNode.Parse(await response.Content.ReadAsStringAsync())!.AsObject();
         Assert.IsNull(info["secureAddress"]);
         Assert.IsNull(info["setupAddress"]);
+        Assert.AreEqual(true, (bool?)info["allowHttpsFallback"]);
     }
 
     [TestMethod]
@@ -137,5 +177,8 @@ public sealed class AddressTests
         CollectionAssert.AreEqual(s_scopedAddresses,
             AddressSuggestions.FallbackAddresses(IPAddress.Parse("10.183.49.101"), scopes, [real], 9090));
         Assert.IsEmpty(AddressSuggestions.FallbackAddresses(IPAddress.Loopback, [], [real], 9090));
+        CollectionAssert.AreEqual(
+            s_scopedHttpsAddresses,
+            AddressSuggestions.FallbackAddresses(IPAddress.Parse("10.183.49.101"), scopes, [real], 9190, https: true));
     }
 }

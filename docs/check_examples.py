@@ -17,7 +17,7 @@ DOCS = Path(__file__).resolve().parent
 sys.path.insert(0, str(DOCS))
 sys.dont_write_bytecode = True
 
-from render_https_guide import PAGE_HEADINGS, render_file  # noqa: E402
+from render_https_guide import PAGE_HEADINGS, render, render_file  # noqa: E402
 
 MKDOCS = """site_name: HTTPS guide check
 theme:
@@ -44,6 +44,18 @@ def main():
             failures.append("There are no examples to check.")
         for index, example in enumerate(examples):
             text = render_file(example)
+            if "Install anyway" not in text or "download notification" not in text:
+                failures.append(f"{example.name}: Android Settings installation steps are missing.")
+            if example.name == "soundling.md":
+                if "Continue over HTTP" in text:
+                    failures.append("soundling.md: guide offers the disabled HTTP escape.")
+                if "Continue on this address" not in text or "HTTPS IP addresses" not in text:
+                    failures.append("soundling.md: guide does not explain the HTTPS IP escape.")
+            if example.name == "triggergate.yaml":
+                if "Continue over HTTP" not in text:
+                    failures.append("triggergate.yaml: guide omits the HTTP escape.")
+                if "On Windows service and Uno" not in text:
+                    failures.append("triggergate.yaml: guide must not promise the HTTPS escape for ESP32 firmware.")
             if "{{" in text or "{%" in text or "{#" in text:
                 failures.append(f"{example.name}: template syntax is left in the rendered page.")
             if "repository-only" in text:
@@ -59,6 +71,17 @@ def main():
                         failures.append(f"{example.name}: this line is missing from the merged page: {line}")
             name = "index.md" if index == 0 else example.stem + ".md"
             (site / "docs" / name).write_text(text, encoding="utf-8", newline="\n")
+        no_escape = render({
+            "product": "Test",
+            "http_port": 8080,
+            "https_port": 8443,
+            "name_pattern": "<host>-test.local",
+            "name_example": "desk-test.local",
+            "allow_http_fallback": False,
+            "allow_https_fallback": False,
+        })
+        if "Continue over HTTP" in no_escape or "Continue on this address" in no_escape:
+            failures.append("Guide with both escapes disabled still describes an escape.")
         result = subprocess.run(
             [sys.executable, "-m", "mkdocs", "build", "--strict", "--quiet", "--site-dir", str(site / "out")],
             cwd=site, capture_output=True, text=True, check=False,

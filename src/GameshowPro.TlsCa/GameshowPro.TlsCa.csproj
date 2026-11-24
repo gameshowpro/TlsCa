@@ -24,7 +24,7 @@
     <None Include="..\..\readme.md" Pack="true" PackagePath="\" />
     <!-- The end-user guide template, its renderer and the integration guide ship in the package, so an app's documentation
          build reads the guide that matches the library version it references (docs/integrating-the-https-guide.md). -->
-    <None Include="..\..\docs\**" Exclude="..\..\docs\**\__pycache__\**" Pack="true" PackagePath="docs\%(RecursiveDir)" Visible="false" />
+    <None Include="..\..\docs\**" Exclude="..\..\docs\**\__pycache__\**" Pack="true" PackagePath="docs\" Visible="false" />
   </ItemGroup>
   <ItemGroup>
     <!-- The ASP.NET Core integration lives in this assembly under GameshowPro.TlsCa.AspNetCore. -->

@@ -39,10 +39,15 @@ internal sealed record InfoDocument(
     [property: JsonPropertyName("gate")] string Gate,
     [property: JsonPropertyName("nameConflict")] bool NameConflict,
     [property: JsonPropertyName("nameMismatch")] string? NameMismatch,
-    [property: JsonPropertyName("certificateSource")] string CertificateSource)
+    [property: JsonPropertyName("certificateSource")] string CertificateSource,
+    [property: JsonPropertyName("secureAddress")] string? SecureAddress,
+    [property: JsonPropertyName("setupAddress")] string? SetupAddress,
+    [property: JsonPropertyName("fallbackAddress")] string? FallbackAddress,
+    [property: JsonPropertyName("fallbackAddresses")] string[] FallbackAddresses,
+    [property: JsonPropertyName("allowHttpFallback")] bool AllowHttpFallback)
 {
     /// <summary>The document for <paramref name="identity"/>, a snapshot of the identity in force.</summary>
-    public static InfoDocument Create(TlsIdentity identity, TlsIdentityManager manager, TlsCaOptions options, ITlsCaGate gate, TlsCaStatus status) =>
+    public static InfoDocument Create(TlsIdentity identity, TlsIdentityManager manager, TlsCaOptions options, ITlsCaGate gate, TlsCaStatus status, string[] fallbackAddresses) =>
         new(
             options.Product,
             identity.Name,
@@ -57,7 +62,12 @@ internal sealed record InfoDocument(
             gate.Kind,
             status.NameConflict,
             manager.NameMismatchFor(identity),
-            CertificateSources.Ca);
+            CertificateSources.Ca,
+            $"https://{identity.MdnsName}:{options.HttpsPort}/",
+            options.HttpPort > 0 ? AddressSuggestions.BuildSetupAddress(identity.MdnsName, options.HttpPort) : null,
+            fallbackAddresses.Length == 1 ? fallbackAddresses[0] : null,
+            fallbackAddresses,
+            options.AllowHttpFallback);
 }
 
 /// <summary>
@@ -71,7 +81,12 @@ internal sealed record CertificateInfoDocument(
     [property: JsonPropertyName("version")] string? Version,
     [property: JsonPropertyName("certificateSource")] string CertificateSource,
     [property: JsonPropertyName("certificateNotAfter"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? CertificateNotAfter,
-    [property: JsonPropertyName("certificateDnsNames"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? CertificateDnsNames);
+    [property: JsonPropertyName("certificateDnsNames"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? CertificateDnsNames,
+    [property: JsonPropertyName("secureAddress")] string? SecureAddress,
+    [property: JsonPropertyName("setupAddress")] string? SetupAddress,
+    [property: JsonPropertyName("fallbackAddress")] string? FallbackAddress,
+    [property: JsonPropertyName("fallbackAddresses")] string[] FallbackAddresses,
+    [property: JsonPropertyName("allowHttpFallback")] bool AllowHttpFallback);
 
 /// <summary>The body of a failed renew or reset: a fixed message, never exception text.</summary>
 internal sealed record ErrorDocument([property: JsonPropertyName("error")] string Error);
@@ -88,7 +103,12 @@ internal sealed record UnavailableDocument(
     [property: JsonPropertyName("httpsPort")] int HttpsPort,
     [property: JsonPropertyName("version")] string? Version,
     [property: JsonPropertyName("gate")] string Gate,
-    [property: JsonPropertyName("certificateSource")] string CertificateSource);
+    [property: JsonPropertyName("certificateSource")] string CertificateSource,
+    [property: JsonPropertyName("secureAddress")] string? SecureAddress,
+    [property: JsonPropertyName("setupAddress")] string? SetupAddress,
+    [property: JsonPropertyName("fallbackAddress")] string? FallbackAddress,
+    [property: JsonPropertyName("fallbackAddresses")] string[] FallbackAddresses,
+    [property: JsonPropertyName("allowHttpFallback")] bool AllowHttpFallback);
 
 /// <summary>Source-generated serialization, so the field names cannot drift and nothing is found by reflection.</summary>
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.Never, WriteIndented = false)]

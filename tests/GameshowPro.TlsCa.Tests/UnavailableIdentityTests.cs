@@ -393,7 +393,7 @@ public sealed class UnavailableIdentityTests
             using HttpResponseMessage page = await client.GetAsync($"http://pi.local:9090{Prefix}/");
 
             Assert.AreEqual(HttpStatusCode.Found, redirected.StatusCode);
-            Assert.AreEqual($"http://pi.local:9090{Prefix}/?x=1", redirected.Headers.Location?.OriginalString);
+            Assert.AreEqual($"http://pi.local:9090{Prefix}/?returnTo=%2F%3Fx%3D1", redirected.Headers.Location?.OriginalString);
             Assert.AreEqual("fallback", await local.Content.ReadAsStringAsync());
             Assert.AreEqual(HttpStatusCode.OK, page.StatusCode);
             Assert.IsNotNull(app.Services.GetRequiredService<ITlsCaStatus>().IdentityProblem);

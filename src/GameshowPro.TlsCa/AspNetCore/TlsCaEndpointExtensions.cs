@@ -56,12 +56,14 @@ public static class TlsCaApplicationBuilderExtensions
     /// answer 404 with a fixed text, <c>renew</c> and <c>reset</c> answer 409 with an <c>error</c> document (415 first for a
     /// body that is not JSON; no gate is asked), and <c>info.json</c> answers 200 without CA fields. An unknown path under
     /// the prefix gets 404.</item>
-    /// <item>Only in <see cref="TlsCaMode.BuiltInCa"/>, when <see cref="TlsCaOptions.RedirectHttpRoot"/> is true (the default), a plain-HTTP <c>GET</c> or
-    /// <c>HEAD</c> of <c>/</c> whose <c>Host</c> is not a loopback name (see <see cref="LoopbackGate.IsLoopbackHost"/>) is
-    /// answered with <c>302</c> and <c>Cache-Control: no-store</c> to <c>http://&lt;host&gt;/.well-known/gameshowpro/</c>,
-    /// keeping the <c>Host</c> header's port and the query string. A request without a <c>Host</c> header (HTTP/1.0) uses
-    /// the local address it arrived on, and gets 404 when that is unknown. Everything else (HTTPS, other paths, other
-    /// methods, loopback hosts) continues down the pipeline.</item>
+    /// <item>In <see cref="TlsCaMode.BuiltInCa"/>, a plain-HTTP browser GET or HEAD navigation reaches the management
+    /// page, with its safe original path and query in <c>returnTo</c>. <see cref="TlsCaOptions.RedirectHttpRoot"/> also
+    /// covers root GET and HEAD requests without navigation headers. A request without a Host header uses its local
+    /// address and gets 404 when that is unknown. A browser navigation over HTTPS on a wrong host reaches the same
+    /// host's management page, which probes the built-in certificate name before forwarding.
+    /// In <see cref="TlsCaMode.OwnCertificate"/>, an HTTP navigation redirects to HTTPS on the same host only when it
+    /// matches a DNS name of the loaded certificate. Loopback hosts and management paths always continue unchanged.
+    /// The redirect behaviors have separate options on <see cref="TlsCaOptions"/>.</item>
     /// </list>
     /// Only request delegates are used (no minimal-API binding), so this is Native AOT safe.
     /// </remarks>
@@ -75,53 +77,173 @@ public static class TlsCaApplicationBuilderExtensions
         }
 
         TlsCaOptions options = app.ApplicationServices.GetRequiredService<TlsCaOptions>();
-        TlsCaMode mode = app.ApplicationServices.GetRequiredService<TlsCaModeResolution>().Mode;
+        TlsCaStatus status = app.ApplicationServices.GetRequiredService<TlsCaStatus>();
         _ = app.MapWhen(static context => TlsCaPaths.IsWellKnown(context.Request.Path), static branch => branch.Run(HandleWellKnown));
-        if (mode == TlsCaMode.BuiltInCa && options.RedirectHttpRoot)
+        if (status.Mode is TlsCaMode.BuiltInCa or TlsCaMode.OwnCertificate)
         {
-            _ = app.Use(RedirectHttpRoot);
+            _ = app.Use(Redirect);
         }
 
         return app;
-    }
 
-    private static Task HandleWellKnown(HttpContext context)
-    {
-        // Routing may already have chosen one of the app's endpoints (its fallback, say); that choice does not apply here.
-        context.SetEndpoint(null);
-        return TlsCaEndpoints.Handle(context);
-    }
-
-    private static Task RedirectHttpRoot(HttpContext context, RequestDelegate next)
-    {
-        HttpRequest request = context.Request;
-        if (request.IsHttps || request.Path != s_root || !(HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method)))
+        Task Redirect(HttpContext context, RequestDelegate next)
         {
+            HttpRequest request = context.Request;
+            if (status.Mode == TlsCaMode.BuiltInCa && options.AllowHttpFallback
+                && request.Cookies.TryGetValue("gsp-tlsca-http", out string? fallback) && fallback == "1")
+            {
+                return next(context);
+            }
+
+            if (!SafePathAndQuery(request, out string pathAndQuery))
+            {
+                return next(context);
+            }
+
+            HostString host = RequestHost(context);
+            if (LoopbackGate.IsLoopbackHost(host))
+            {
+                return next(context);
+            }
+
+            bool navigation = IsBrowserNavigation(request);
+            if (request.IsHttps)
+            {
+                if (status.Mode == TlsCaMode.BuiltInCa && options.RedirectHttpsHost
+                    && navigation && host.HasValue
+                    && status.MdnsName is { Length: > 0 } canonical
+                    && !host.Host.Equals(canonical, StringComparison.OrdinalIgnoreCase))
+                {
+                    return RedirectTo($"https://{host.ToUriComponent()}{TlsCaPaths.WellKnownPrefix}/?returnTo={Uri.EscapeDataString(pathAndQuery)}");
+                }
+
+                return next(context);
+            }
+
+            if (status.Mode == TlsCaMode.BuiltInCa)
+            {
+                bool root = request.Path == s_root;
+                bool redirect = root
+                    ? options.RedirectHttpRoot && (navigation || !ExplicitNonNavigation(request))
+                    : options.RedirectHttpNavigations && navigation;
+                if (redirect)
+                {
+                    return host.HasValue
+                        ? RedirectTo($"http://{host.ToUriComponent()}{TlsCaPaths.WellKnownPrefix}/?returnTo={Uri.EscapeDataString(pathAndQuery)}")
+                        : NotFound();
+                }
+            }
+            else if (status.Mode == TlsCaMode.OwnCertificate && options.RedirectOwnCertificateHttp && navigation
+                     && status.HttpsPort is > 0 && host.HasValue && HostMatchesCertificate(host.Host, status.CertificateDnsNames))
+            {
+                return RedirectTo($"https://{new HostString(host.Host, status.HttpsPort).ToUriComponent()}{pathAndQuery}");
+            }
+
             return next(context);
+
+            Task RedirectTo(string location)
+            {
+                context.Response.Headers.CacheControl = "no-store";
+                context.Response.Redirect(location, permanent: false);
+                return Task.CompletedTask;
+            }
+
+            Task NotFound()
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return Task.CompletedTask;
+            }
         }
 
-        string? host = RequestHost(context);
-        if (LoopbackGate.IsLoopbackHost(host is null ? default : new HostString(host)))
+        static Task HandleWellKnown(HttpContext context)
         {
-            return next(context);
+            // Routing may already have chosen one of the app's endpoints (its fallback, say); that choice does not apply here.
+            context.SetEndpoint(null);
+            return TlsCaEndpoints.Handle(context);
         }
 
-        if (string.IsNullOrWhiteSpace(host))
+        static HostString RequestHost(HttpContext context)
         {
-            context.Response.StatusCode = StatusCodes.Status404NotFound;
-            return Task.CompletedTask;
+            if (context.Request.Host.HasValue)
+            {
+                return context.Request.Host;
+            }
+
+            return context.Connection.LocalIpAddress is { } local
+                ? new HostString(local.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 ? $"[{local}]" : local.ToString())
+                : default;
         }
 
-        context.Response.Headers.CacheControl = "no-store";
-        context.Response.Redirect($"http://{host.Trim()}{TlsCaPaths.WellKnownPrefix}/{request.QueryString.ToUriComponent()}", permanent: false);
-        return Task.CompletedTask;
+        static bool IsBrowserNavigation(HttpRequest request)
+        {
+            if (!(HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method)))
+            {
+                return false;
+            }
 
-        // Use the Host header, or the local address for HTTP/1.0 requests without one.
-        static string? RequestHost(HttpContext context) =>
-            context.Request.Host.HasValue
-                ? context.Request.Host.Value
-                : context.Connection.LocalIpAddress is { } local
-                    ? (local.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 ? $"[{local}]" : local.ToString())
-                    : null;
+            string mode = request.Headers["Sec-Fetch-Mode"].ToString();
+            if (mode.Length > 0)
+            {
+                return mode.Equals("navigate", StringComparison.OrdinalIgnoreCase)
+                    && (request.Headers["Sec-Fetch-Dest"].ToString().Equals("document", StringComparison.OrdinalIgnoreCase)
+                        || request.Headers["Sec-Fetch-Dest"].ToString().Equals("iframe", StringComparison.OrdinalIgnoreCase));
+            }
+
+            string destination = request.Headers["Sec-Fetch-Dest"].ToString();
+            if (destination.Length > 0 && !destination.Equals("document", StringComparison.OrdinalIgnoreCase)
+                && !destination.Equals("iframe", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            try
+            {
+                return request.GetTypedHeaders().Accept?.Any(mediaType =>
+                    mediaType.MediaType.ToString().Equals("text/html", StringComparison.OrdinalIgnoreCase)
+                    && mediaType.Quality is null or > 0) == true;
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+        }
+
+        static bool ExplicitNonNavigation(HttpRequest request) =>
+            !(HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method))
+            || request.Headers.ContainsKey("Sec-Fetch-Mode") && !IsBrowserNavigation(request)
+            || request.Headers.ContainsKey("Sec-Fetch-Dest") && !IsBrowserNavigation(request)
+            || request.Headers.Accept.Count > 0 && !IsBrowserNavigation(request)
+               && !request.Headers.Accept.ToString().Equals("*/*", StringComparison.Ordinal);
+
+        static bool HostMatchesCertificate(string host, IReadOnlyList<string> dnsNames) =>
+            dnsNames.Any(name => name.Equals(host, StringComparison.OrdinalIgnoreCase)
+                || name.StartsWith("*.", StringComparison.Ordinal)
+                    && host.EndsWith(name[1..], StringComparison.OrdinalIgnoreCase)
+                    && host.Length > name.Length - 1
+                    && !host[..(host.Length - name.Length + 1)].Contains('.'));
+
+        static bool SafePathAndQuery(HttpRequest request, out string pathAndQuery)
+        {
+            string path = request.PathBase.ToUriComponent() + request.Path.ToUriComponent();
+            if (path.Length == 0)
+            {
+                path = "/";
+            }
+
+            string decoded = path;
+            for (int pass = 0; pass < 2; pass++)
+            {
+                decoded = Uri.UnescapeDataString(decoded);
+                if (!decoded.StartsWith('/') || decoded.StartsWith("//", StringComparison.Ordinal)
+                    || decoded.Contains('\\') || decoded.Any(char.IsControl))
+                {
+                    pathAndQuery = "";
+                    return false;
+                }
+            }
+
+            pathAndQuery = path + request.QueryString.ToUriComponent();
+            return !pathAndQuery.Any(char.IsControl);
+        }
     }
 }

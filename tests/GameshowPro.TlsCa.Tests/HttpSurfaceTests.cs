@@ -16,6 +16,7 @@ public sealed class HttpSurfaceTests
     [
         "product", "name", "mdnsName", "httpsPort", "caFingerprintSha256", "previousCaFingerprintSha256", "leafNotBefore",
         "leafNotAfter", "caNotAfter", "version", "gate", "nameConflict", "nameMismatch", "certificateSource",
+        "secureAddress", "setupAddress", "fallbackAddress", "fallbackAddresses", "allowHttpFallback",
     ];
 
     [TestMethod]

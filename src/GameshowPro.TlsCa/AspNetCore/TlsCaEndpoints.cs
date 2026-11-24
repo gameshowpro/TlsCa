@@ -126,13 +126,19 @@ internal static partial class TlsCaEndpoints
                 context.Response.Headers.AccessControlAllowOrigin = "*";
                 TlsCaOptions options = services.GetRequiredService<TlsCaOptions>();
                 OwnCertificate? own = status.OwnCertificate;
+                string[] fallbackAddresses = FallbackAddresses(context, options);
                 CertificateInfoDocument document = new(
                     options.Product,
                     status.HttpsPort,
                     options.Version,
                     CertificateSources.For(status.Mode),
                     own?.NotAfter.ToUnixTimeSeconds(),
-                    own is null ? null : [.. own.DnsNames]);
+                    own is null ? null : [.. own.DnsNames],
+                    status.SecureAddress,
+                    status.SetupAddress,
+                    fallbackAddresses.Length == 1 ? fallbackAddresses[0] : null,
+                    fallbackAddresses,
+                    false);
                 return Results.Json(document, TlsCaJsonContext.Default.CertificateInfoDocument);
             }
 
@@ -146,13 +152,14 @@ internal static partial class TlsCaEndpoints
             {
                 // The trust probe fetches this from the HTTP page. It carries nothing secret.
                 context.Response.Headers.AccessControlAllowOrigin = "*";
-                if (CreateInfo(services) is { } info)
+                if (CreateInfo(context, services) is { } info)
                 {
                     return Results.Json(info, TlsCaJsonContext.Default.InfoDocument);
                 }
 
                 TlsCaOptions options = services.GetRequiredService<TlsCaOptions>();
-                UnavailableDocument unavailable = new(UnavailableMessage, IdentityUnavailable: true, options.Product, options.HttpsPort, options.Version, services.GetRequiredService<ITlsCaGate>().Kind, CertificateSources.Ca);
+                string[] fallbackAddresses = FallbackAddresses(context, options);
+                UnavailableDocument unavailable = new(UnavailableMessage, IdentityUnavailable: true, options.Product, options.HttpsPort, options.Version, services.GetRequiredService<ITlsCaGate>().Kind, CertificateSources.Ca, null, null, fallbackAddresses.Length == 1 ? fallbackAddresses[0] : null, fallbackAddresses, options.AllowHttpFallback);
                 return Results.Json(unavailable, TlsCaJsonContext.Default.UnavailableDocument, statusCode: StatusCodes.Status503ServiceUnavailable);
             }
         }
@@ -186,7 +193,7 @@ internal static partial class TlsCaEndpoints
         Results.Bytes(AppleProfile.Build(identity), AppleProfile.ContentType);
 
     /// <summary>The document for the identity in force, or null when there is none.</summary>
-    private static InfoDocument? CreateInfo(IServiceProvider services)
+    private static InfoDocument? CreateInfo(HttpContext context, IServiceProvider services)
     {
         TlsIdentityManager manager = services.GetRequiredService<TlsIdentityManager>();
         return manager.CurrentOrDefault is { } identity
@@ -195,8 +202,28 @@ internal static partial class TlsCaEndpoints
                 manager,
                 services.GetRequiredService<TlsCaOptions>(),
                 services.GetRequiredService<ITlsCaGate>(),
-                services.GetRequiredService<TlsCaStatus>())
+                services.GetRequiredService<TlsCaStatus>(),
+                FallbackAddresses(context, services.GetRequiredService<TlsCaOptions>()))
             : null;
+    }
+
+    private static string[] FallbackAddresses(HttpContext context, TlsCaOptions options)
+    {
+        if (options.HttpPort <= 0)
+        {
+            return [];
+        }
+
+        IReadOnlyList<TlsCaMdnsScope>? scopes = options.MdnsScopes;
+        if (scopes is not null)
+        {
+            return AddressSuggestions.FallbackAddresses(context.Connection.LocalIpAddress, scopes, [], options.HttpPort);
+        }
+
+        string[] direct = AddressSuggestions.FallbackAddresses(context.Connection.LocalIpAddress, null, [], options.HttpPort);
+        return direct.Length > 0
+            ? direct
+            : AddressSuggestions.FallbackAddresses(null, null, AddressSuggestions.OperationalNetworks(), options.HttpPort);
     }
 
     private static Task<IResult> Change(HttpContext context, IServiceProvider services, bool reset) =>
@@ -205,7 +232,7 @@ internal static partial class TlsCaEndpoints
             services.GetRequiredService<TlsIdentityManager>(),
             services.GetRequiredService<ITlsCaGate>(),
             services.GetRequiredService<ILogger<TlsCaMarker>>(),
-            () => CreateInfo(services),
+            () => CreateInfo(context, services),
             reset);
 
     /// <summary>

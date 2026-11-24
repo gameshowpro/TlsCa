@@ -23,6 +23,12 @@ public interface ITlsCaStatus
     /// </summary>
     int HttpsPort { get; }
 
+    /// <summary>A ready-to-open HTTPS root when this library knows a certificate name, else null.</summary>
+    string? SecureAddress => null;
+
+    /// <summary>The built-in CA's HTTP management page when its identity and HTTP listener are available, else null.</summary>
+    string? SetupAddress => null;
+
     /// <summary>Another mDNS responder owns the device name. Reported, never resolved by renaming. Only in <see cref="TlsCaMode.BuiltInCa"/>.</summary>
     bool NameConflict { get; }
 
@@ -121,6 +127,36 @@ internal sealed partial class TlsCaStatus : ITlsCaStatus, IDisposable
         TlsCaMode.Off => 0,
         _ => 0,
     };
+
+    public string? SecureAddress
+    {
+        get
+        {
+            if (HttpsPort <= 0)
+            {
+                return null;
+            }
+
+            return Mode switch
+            {
+                TlsCaMode.BuiltInCa when _manager?.CurrentOrDefault is { } identity =>
+                    $"https://{identity.MdnsName}:{HttpsPort}/",
+                TlsCaMode.OwnCertificate when _own?.Current is { } own =>
+                    FirstConcreteDnsName(own.DnsNames) is { } name ? $"https://{name}:{HttpsPort}/" : null,
+                TlsCaMode.BuiltInCa or TlsCaMode.OwnCertificate => null,
+                TlsCaMode.KestrelCertificate or TlsCaMode.Off => null,
+                _ => null,
+            };
+
+            // SAN order is certificate order; the first concrete DNS name is the operator's primary address.
+            static string? FirstConcreteDnsName(IEnumerable<string> names) => names.FirstOrDefault(
+                static name => !name.Contains('*', StringComparison.Ordinal) && Uri.CheckHostName(name) == UriHostNameType.Dns);
+        }
+    }
+
+    public string? SetupAddress => Mode == TlsCaMode.BuiltInCa && _options.HttpPort > 0 && _manager?.CurrentOrDefault is { } identity
+        ? AddressSuggestions.BuildSetupAddress(identity.MdnsName, _options.HttpPort)
+        : null;
 
     public string? NameMismatch => _manager?.CurrentOrDefault is { } identity ? _manager.NameMismatchFor(identity) : null;
 

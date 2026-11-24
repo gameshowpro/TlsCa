@@ -14,8 +14,8 @@ public sealed class OwnCertificateTests
     private const string DnsName = "server.example.test";
     private const string Password = "pfx-pass-7f3a";
 
-    private static readonly string[] s_ownInfoFields = ["product", "httpsPort", "version", "certificateSource", "certificateNotAfter", "certificateDnsNames"];
-    private static readonly string[] s_plainInfoFields = ["product", "httpsPort", "version", "certificateSource"];
+    private static readonly string[] s_ownInfoFields = ["product", "httpsPort", "version", "certificateSource", "certificateNotAfter", "certificateDnsNames", "secureAddress", "setupAddress", "fallbackAddress", "fallbackAddresses", "allowHttpFallback"];
+    private static readonly string[] s_plainInfoFields = ["product", "httpsPort", "version", "certificateSource", "secureAddress", "setupAddress", "fallbackAddress", "fallbackAddresses", "allowHttpFallback"];
 
     // Handshakes
 
@@ -44,6 +44,8 @@ public sealed class OwnCertificateTests
         Assert.IsNull(app.Status.Problem);
         CollectionAssert.AreEqual(new[] { DnsName }, app.Status.CertificateDnsNames.ToArray());
         Assert.AreEqual(new DateTimeOffset(chain.Leaf.NotAfter.ToUniversalTime(), TimeSpan.Zero), app.Status.CertificateNotAfter);
+        Assert.AreEqual($"https://{DnsName}:{app.HttpsPort}/", app.Status.SecureAddress);
+        Assert.IsNull(app.Status.SetupAddress);
 
         // One Information line names the port, the file, the subject, the names and the expiry; the password is never logged.
         string loaded = logs.Messages.Single(message => message.StartsWith("Information: HTTPS on port", StringComparison.Ordinal));
@@ -155,6 +157,7 @@ public sealed class OwnCertificateTests
         Assert.IsNotNull(app.Status.Problem);
         StringAssert.Contains(app.Status.Problem, pfx);
         Assert.IsNull(app.Status.CertificateNotAfter);
+        Assert.IsNull(app.Status.SecureAddress);
         Assert.HasCount(1, logs.AtLeast(LogLevel.Error));
         using (TcpClient tcp = new())
         {
@@ -177,6 +180,7 @@ public sealed class OwnCertificateTests
         await WaitFor(async () => (await Handshake(app.HttpsPort, DnsName, chain.Root, SslProtocols.Tls12)).Connected, logs);
         Assert.IsNull(app.Status.Problem);
         Assert.IsNotNull(app.Status.CertificateNotAfter);
+        Assert.AreEqual($"https://{DnsName}:{app.HttpsPort}/", app.Status.SecureAddress);
         CollectionAssert.AreEquivalent(s_ownInfoFields, (await app.GetInfo()).Select(pair => pair.Key).ToArray());
 
         // Failed handshakes were Debug only; nothing about the built-in CA, and its storage was never touched.
@@ -267,6 +271,8 @@ public sealed class OwnCertificateTests
         Assert.IsNull(app.Status.IdentityProblem);
         Assert.AreEqual("", app.Status.MdnsName);
         Assert.AreEqual("", app.Status.CaFingerprintSha256);
+        Assert.AreEqual(mode == NonCaMode.OwnLoaded ? $"https://{DnsName}:9443/" : null, app.Status.SecureAddress);
+        Assert.IsNull(app.Status.SetupAddress);
         List<string> bodies = [];
 
         // The page is a short static notice with the page's security headers: no script, no buttons, no downloads.
@@ -311,6 +317,9 @@ public sealed class OwnCertificateTests
             Assert.AreEqual("2.1.7", (string?)info["version"]);
             Assert.AreEqual(mode == NonCaMode.Off ? "off" : "own", (string?)info["certificateSource"]);
             Assert.AreEqual(mode == NonCaMode.Off ? 0 : 9443, (int?)info["httpsPort"]);
+            Assert.AreEqual(mode == NonCaMode.OwnLoaded ? $"https://{DnsName}:9443/" : null, (string?)info["secureAddress"]);
+            Assert.IsNull(info["setupAddress"]);
+            Assert.AreEqual(false, (bool?)info["allowHttpFallback"]);
             if (mode == NonCaMode.OwnLoaded)
             {
                 Assert.AreEqual(new DateTimeOffset(chain.Leaf.NotAfter.ToUniversalTime(), TimeSpan.Zero).ToUnixTimeSeconds(), (long?)info["certificateNotAfter"]);

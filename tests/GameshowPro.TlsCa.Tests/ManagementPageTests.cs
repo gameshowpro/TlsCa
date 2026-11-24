@@ -52,4 +52,49 @@ public sealed class ManagementPageTests
         Assert.Contains("$(\"renew\").hidden = true;", html);
         Assert.Contains("$(\"manage\").hidden = false;", html);
     }
+
+    [TestMethod]
+    public async Task Page_OffersOtherComputersSecureAddressAndHttpSetupQrOnLocalhost()
+    {
+        await using TestApp app = await TestApp.Start();
+
+        string html = await app.Client.GetStringAsync("/.well-known/gameshowpro/");
+
+        Assert.Contains("id=\"other-computers\" hidden", html);
+        Assert.Contains("id=\"share-address\"", html);
+        Assert.Contains("id=\"copy-address\"", html);
+        Assert.Contains("id=\"qr\"", html);
+        Assert.Contains("id=\"fallback-addresses\"", html);
+        Assert.Contains("box.hidden = !isLoopback();", html);
+        Assert.Contains("$(\"share-address\").textContent = httpsUrl(i);", html);
+        Assert.Contains("code.addData(setup);", html);
+        Assert.Contains("\"fallbackAddresses\" in i", html);
+        Assert.Contains("i.fallbackAddress ? [i.fallbackAddress] : []", html);
+        Assert.Contains("item.appendChild(el(\"code\", address));", html);
+        Assert.Contains("$(\"fallback-block\").hidden = !list.firstChild;", html);
+        Assert.Contains("i.secureAddress ||", html);
+        Assert.Contains("if (i.setupAddress) { return i.setupAddress; }", html);
+        Assert.Contains("if (location.protocol !== \"http:\") { return null; }", html);
+        Assert.Contains("qrcode-generator 2.0.4", html);
+        Assert.Contains("MIT License", html);
+    }
+
+    [TestMethod]
+    public async Task Page_ValidatesCarriedPath_AndOffersSessionHttpOnlyWhenEnabled()
+    {
+        await using TestApp app = await TestApp.Start();
+
+        string html = await app.Client.GetStringAsync("/.well-known/gameshowpro/");
+
+        Assert.Contains("new URLSearchParams(location.search).get(\"returnTo\")", html);
+        Assert.Contains("target.origin === base.origin", html);
+        Assert.Contains("target.origin === setup.origin", html);
+        Assert.Contains("location.replace(destination);", html);
+        Assert.Contains("id=\"http-fallback\" hidden", html);
+        Assert.Contains("i.allowHttpFallback !== true", html);
+        Assert.Contains("info.allowHttpFallback !== true", html);
+        Assert.Contains("document.cookie = \"gsp-tlsca-http=1; Path=/; SameSite=Lax\"", html);
+        Assert.Contains("location.assign(destination);", html);
+        Assert.Contains("location.origin === new URL(url).origin", html);
+    }
 }

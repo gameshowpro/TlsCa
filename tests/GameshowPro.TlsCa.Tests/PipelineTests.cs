@@ -2,7 +2,7 @@ namespace GameshowPro.TlsCa.Tests;
 
 /// <summary>
 /// <c>UseGameshowProTlsCa</c> in front of an app's own pipeline: the well-known paths win over the app's routing,
-/// fallback and redirects, and the plain-HTTP root of a non-loopback host is redirected to the management page.
+/// fallback and redirects, and browser navigations reach the secure name through the management page.
 /// </summary>
 [TestClass]
 public sealed class PipelineTests
@@ -36,14 +36,19 @@ public sealed class PipelineTests
         }
     }
 
-    private static async Task<App> Start(AppPipeline pipeline = AppPipeline.Fallback, Action<TlsCaOptions>? configure = null, bool tlsCa = true)
+    private static async Task<App> Start(AppPipeline pipeline = AppPipeline.Fallback, Action<TlsCaOptions>? configure = null, bool tlsCa = true, TlsCaMode? expectedMode = null)
     {
         TempDirectory directory = new();
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         _ = builder.Logging.ClearProviders();
         _ = builder.WebHost.UseTestServer();
+        if (expectedMode == TlsCaMode.KestrelCertificate)
+        {
+            _ = builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Kestrel:Endpoints:Https:Url"] = "https://*:9443" });
+        }
+
         TlsCaMode mode = builder.AddGameshowProTlsCa(ConfigureOptions);
-        Assert.AreEqual(tlsCa ? TlsCaMode.BuiltInCa : TlsCaMode.Off, mode);
+        Assert.AreEqual(expectedMode ?? (tlsCa ? TlsCaMode.BuiltInCa : TlsCaMode.Off), mode);
         WebApplication app = builder.Build();
         // TestServer has no remote address; the gate needs a loopback one for the POST tests.
         _ = app.Use(SetLoopbackRemoteAddress);
@@ -90,13 +95,29 @@ public sealed class PipelineTests
         }
     }
 
-    private static async Task<(int Status, string? Location, string Body, HttpResponseMessage Response)> Send(App app, HttpMethod method, string url, string? json = null)
+    private static async Task<(int Status, string? Location, string Body, HttpResponseMessage Response)> Send(
+        App app, HttpMethod method, string url, string? json = null, string? accept = null, string? fetchMode = null, string? fetchDest = null)
     {
         using HttpClient client = app.Web.GetTestClient();
         using HttpRequestMessage request = new(method, url);
         if (json is not null)
         {
             request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        }
+
+        if (accept is not null)
+        {
+            _ = request.Headers.TryAddWithoutValidation("Accept", accept);
+        }
+
+        if (fetchMode is not null)
+        {
+            _ = request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", fetchMode);
+        }
+
+        if (fetchDest is not null)
+        {
+            _ = request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", fetchDest);
         }
 
         HttpResponseMessage response = await client.SendAsync(request);
@@ -156,7 +177,7 @@ public sealed class PipelineTests
         using (response)
         {
             Assert.AreEqual(404, status);
-            Assert.DoesNotContain("fallback", body);
+            Assert.IsFalse(body.StartsWith("fallback ", StringComparison.Ordinal));
             Assert.AreEqual("no-store", response.Headers.CacheControl?.ToString());
         }
     }
@@ -192,7 +213,7 @@ public sealed class PipelineTests
         using (response)
         {
             Assert.AreEqual(200, status, path);
-            Assert.DoesNotContain("fallback", body);
+            Assert.IsFalse(body.StartsWith("fallback ", StringComparison.Ordinal));
         }
     }
 
@@ -211,13 +232,13 @@ public sealed class PipelineTests
     // The HTTP root redirect
 
     [TestMethod]
-    [DataRow("GET", "http://pi.local:9090/?x=1&y=2", "http://pi.local:9090/.well-known/gameshowpro/?x=1&y=2")]
-    [DataRow("HEAD", "http://pi.local:9090/?x=1&y=2", "http://pi.local:9090/.well-known/gameshowpro/?x=1&y=2")]
-    [DataRow("GET", "http://studio-pc-triggergate.local:9090/", "http://studio-pc-triggergate.local:9090/.well-known/gameshowpro/")]
-    [DataRow("GET", "http://192.168.1.20:9090/", "http://192.168.1.20:9090/.well-known/gameshowpro/")]
-    [DataRow("HEAD", "http://[fe80::1]:9090/", "http://[fe80::1]:9090/.well-known/gameshowpro/")]
-    [DataRow("GET", "http://pi.local/", "http://pi.local/.well-known/gameshowpro/")]
-    [DataRow("GET", "http://127.0.0.2:9090/", "http://127.0.0.2:9090/.well-known/gameshowpro/")]
+    [DataRow("GET", "http://pi.local:9090/?x=1&y=2", "http://pi.local:9090/.well-known/gameshowpro/?returnTo=%2F%3Fx%3D1%26y%3D2")]
+    [DataRow("HEAD", "http://pi.local:9090/?x=1&y=2", "http://pi.local:9090/.well-known/gameshowpro/?returnTo=%2F%3Fx%3D1%26y%3D2")]
+    [DataRow("GET", "http://studio-pc-triggergate.local:9090/", "http://studio-pc-triggergate.local:9090/.well-known/gameshowpro/?returnTo=%2F")]
+    [DataRow("GET", "http://192.168.1.20:9090/", "http://192.168.1.20:9090/.well-known/gameshowpro/?returnTo=%2F")]
+    [DataRow("HEAD", "http://[fe80::1]:9090/", "http://[fe80::1]:9090/.well-known/gameshowpro/?returnTo=%2F")]
+    [DataRow("GET", "http://pi.local/", "http://pi.local/.well-known/gameshowpro/?returnTo=%2F")]
+    [DataRow("GET", "http://127.0.0.2:9090/", "http://127.0.0.2:9090/.well-known/gameshowpro/?returnTo=%2F")]
     public async Task Root_NonLoopbackHostOverHttp_IsRedirectedToTheManagementPage(string method, string url, string expected)
     {
         await using App app = await Start();
@@ -239,8 +260,6 @@ public sealed class PipelineTests
     [DataRow("HEAD", "http://[::1]:9090/")]
     [DataRow("POST", "http://pi.local:9090/")]
     [DataRow("PUT", "http://pi.local:9090/")]
-    [DataRow("GET", "https://pi.local:9190/")]
-    [DataRow("HEAD", "https://192.168.1.20:9190/")]
     [DataRow("GET", "http://pi.local:9090/settings")]
     [DataRow("GET", "http://pi.local:9090/index.html?x=1")]
     public async Task Root_LoopbackHostsHttpsOtherMethodsAndOtherPaths_ReachTheApp(string method, string url)
@@ -259,8 +278,8 @@ public sealed class PipelineTests
     }
 
     [TestMethod]
-    [DataRow("10.0.0.5", "http://10.0.0.5/.well-known/gameshowpro/?a=b")]
-    [DataRow("fe80::1", "http://[fe80::1]/.well-known/gameshowpro/?a=b")]
+    [DataRow("10.0.0.5", "http://10.0.0.5/.well-known/gameshowpro/?returnTo=%2F%3Fa%3Db")]
+    [DataRow("fe80::1", "http://[fe80::1]/.well-known/gameshowpro/?returnTo=%2F%3Fa%3Db")]
     public async Task Root_WithoutAHost_UsesTheLocalAddress(string local, string expected)
     {
         await using App app = await Start();
@@ -306,6 +325,255 @@ public sealed class PipelineTests
             Assert.AreEqual(200, status);
             Assert.IsNull(location);
             Assert.AreEqual("fallback GET /", body);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("GET", "/settings?tab=network", "text/html", null, null)]
+    [DataRow("HEAD", "/dashboard?x=1", null, "navigate", "document")]
+    [DataRow("GET", "/frame?x=1", null, "navigate", "iframe")]
+    public async Task HttpPageNavigation_ReachesManagementWithOriginalPath(string method, string path, string? accept, string? fetchMode, string? fetchDest)
+    {
+        await using App app = await Start();
+        (int status, string? location, _, HttpResponseMessage response) = await Send(
+            app, new HttpMethod(method), "http://pi.local:9090" + path, accept: accept, fetchMode: fetchMode, fetchDest: fetchDest);
+        using (response)
+        {
+            Assert.AreEqual(302, status);
+            Assert.AreEqual($"http://pi.local:9090{Prefix}/?returnTo={Uri.EscapeDataString(path)}", location);
+            Assert.AreEqual("no-store", response.Headers.CacheControl?.ToString());
+        }
+    }
+
+    [TestMethod]
+    [DataRow("GET", "/api/data", "application/json", null, null)]
+    [DataRow("GET", "/api/data", "text/html", "cors", "empty")]
+    [DataRow("GET", "/api/data", "application/x-text/html", null, null)]
+    [DataRow("GET", "/api/data", "text/html;q=0", null, null)]
+    [DataRow("GET", "/api/data", "%%%", null, null)]
+    [DataRow("GET", "/", "application/json", null, null)]
+    [DataRow("GET", "/", "text/html", "same-origin", "empty")]
+    [DataRow("POST", "/", "text/html", "navigate", "document")]
+    public async Task HttpNonNavigation_ReachesApp(string method, string path, string? accept, string? fetchMode, string? fetchDest)
+    {
+        await using App app = await Start();
+        (int status, string? location, string body, HttpResponseMessage response) = await Send(
+            app, new HttpMethod(method), "http://pi.local:9090" + path,
+            method == "POST" ? "{}" : null, accept, fetchMode, fetchDest);
+        using (response)
+        {
+            Assert.AreEqual(200, status);
+            Assert.IsNull(location);
+            StringAssert.StartsWith(body, $"fallback {method} {path}");
+        }
+    }
+
+    [TestMethod]
+    public async Task HttpsWrongHost_PageNavigationGoesThroughSameHostManagementPage()
+    {
+        await using App app = await Start();
+        (int status, string? location, _, HttpResponseMessage response) = await Send(
+            app, HttpMethod.Get, "https://192.168.1.20:9190/settings?q=1", accept: "text/html");
+        using (response)
+        {
+            Assert.AreEqual(302, status);
+            Assert.AreEqual($"https://192.168.1.20:9190{Prefix}/?returnTo=%2Fsettings%3Fq%3D1", location);
+        }
+
+        string canonical = app.Web.Services.GetRequiredService<ITlsCaStatus>().MdnsName;
+        (status, location, _, response) = await Send(app, HttpMethod.Get, $"https://{canonical}:9190/settings?q=1", accept: "text/html");
+        using (response)
+        {
+            Assert.AreEqual(200, status);
+            Assert.IsNull(location);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("GET", "application/json")]
+    [DataRow("POST", "text/html")]
+    public async Task HttpsWrongHost_NonNavigationReachesApp(string method, string accept)
+    {
+        await using App app = await Start();
+        (int status, string? location, _, HttpResponseMessage response) = await Send(
+            app, new HttpMethod(method), "https://192.168.1.20:9190/api", method == "POST" ? "{}" : null, accept);
+        using (response)
+        {
+            Assert.AreEqual(200, status);
+            Assert.IsNull(location);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("http://pi.local:9090/settings")]
+    [DataRow("https://pi.local:9190/settings")]
+    public async Task BuiltInFallbackCookie_SuppressesRedirectUnlessOptionIsOff(string url)
+    {
+        await using App app = await Start();
+        using HttpClient client = app.Web.GetTestClient();
+        using HttpRequestMessage request = new(HttpMethod.Get, url);
+        _ = request.Headers.TryAddWithoutValidation("Accept", "text/html");
+        _ = request.Headers.TryAddWithoutValidation("Cookie", "gsp-tlsca-http=1");
+        using HttpResponseMessage response = await client.SendAsync(request);
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+
+        await using App disabled = await Start(configure: options => options.AllowHttpFallback = false);
+        using HttpClient disabledClient = disabled.Web.GetTestClient();
+        using HttpRequestMessage disabledRequest = new(HttpMethod.Get, url);
+        _ = disabledRequest.Headers.TryAddWithoutValidation("Accept", "text/html");
+        _ = disabledRequest.Headers.TryAddWithoutValidation("Cookie", "gsp-tlsca-http=1");
+        using HttpResponseMessage redirected = await disabledClient.SendAsync(disabledRequest);
+        Assert.AreEqual(HttpStatusCode.Found, redirected.StatusCode);
+    }
+
+    [TestMethod]
+    [DataRow("renew")]
+    [DataRow("reset")]
+    public async Task BuiltInFallbackCookie_DoesNotBypassManagementGate(string action)
+    {
+        await using App app = await Start();
+        using HttpClient client = app.Web.GetTestClient();
+        using HttpRequestMessage request = new(HttpMethod.Post, $"http://pi.local:9090{Prefix}/{action}")
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        };
+        _ = request.Headers.TryAddWithoutValidation("Cookie", "gsp-tlsca-http=1");
+        using HttpResponseMessage response = await client.SendAsync(request);
+        Assert.AreEqual(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [TestMethod]
+    [DataRow("http://localhost:9090/settings")]
+    [DataRow("https://localhost:9190/settings")]
+    public async Task LocalhostBrowserNavigation_ReachesApp(string url)
+    {
+        await using App app = await Start();
+        (int status, string? location, _, HttpResponseMessage response) = await Send(app, HttpMethod.Get, url, accept: "text/html");
+        using (response)
+        {
+            Assert.AreEqual(200, status);
+            Assert.IsNull(location);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("//evil.example/path")]
+    [DataRow("/\\evil.example/path")]
+    [DataRow("/%2F%2Fevil.example/path")]
+    public async Task UnsafePath_IsNotCarriedInRedirect(string path)
+    {
+        await using App app = await Start();
+        HttpContext context = await app.Web.GetTestServer().SendAsync(PrepareUnsafePath);
+        Assert.AreEqual(200, context.Response.StatusCode);
+        Assert.IsFalse(context.Response.Headers.ContainsKey("Location"));
+
+        void PrepareUnsafePath(HttpContext context)
+        {
+            context.Request.Method = HttpMethods.Get;
+            context.Request.Scheme = "http";
+            context.Request.Host = new HostString("pi.local", 9090);
+            context.Request.Path = new PathString(path);
+            context.Request.Headers.Accept = "text/html";
+        }
+    }
+
+    [TestMethod]
+    public async Task RedirectOptions_AreIndependent()
+    {
+        await using App app = await Start(configure: ConfigureRedirects);
+        (int status, _, _, HttpResponseMessage root) = await Send(app, HttpMethod.Get, "http://pi.local:9090/");
+        using (root)
+        {
+            Assert.AreEqual(302, status, "The existing root option stays enabled.");
+        }
+
+        (status, _, _, HttpResponseMessage other) = await Send(app, HttpMethod.Get, "http://pi.local:9090/settings", accept: "text/html");
+        using (other)
+        {
+            Assert.AreEqual(200, status);
+        }
+
+        (status, _, _, HttpResponseMessage secure) = await Send(app, HttpMethod.Get, "https://pi.local:9190/settings", accept: "text/html");
+        using (secure)
+        {
+            Assert.AreEqual(200, status);
+        }
+
+        static void ConfigureRedirects(TlsCaOptions options)
+        {
+            options.RedirectHttpNavigations = false;
+            options.RedirectHttpsHost = false;
+        }
+    }
+
+    [TestMethod]
+    public async Task OwnCertificate_HttpNavigationRedirectsOnlyMatchingDnsHost()
+    {
+        using TestChain chain = TestChain.Create(withIntermediate: false);
+        using TempDirectory files = new();
+        string pfx = chain.WritePfx(files.Path, "redirect-test");
+        await using App app = await Start(configure: ConfigureOwn, expectedMode: TlsCaMode.OwnCertificate);
+
+        (int status, string? location, _, HttpResponseMessage matching) = await Send(
+            app, HttpMethod.Get, "http://server.example.test:9090/settings?q=1", accept: "text/html");
+        using (matching)
+        {
+            Assert.AreEqual(302, status);
+            Assert.AreEqual("https://server.example.test:9190/settings?q=1", location);
+        }
+
+        foreach (string url in new[] { "http://other.example.test:9090/settings", "http://localhost:9090/settings", "http://server.example.test:9090/api" })
+        {
+            (status, location, _, HttpResponseMessage ignored) = await Send(app, HttpMethod.Get, url, accept: url.EndsWith("/api", StringComparison.Ordinal) ? "application/json" : "text/html");
+            using (ignored)
+            {
+                Assert.AreEqual(200, status, url);
+                Assert.IsNull(location, url);
+            }
+        }
+
+        (status, location, _, HttpResponseMessage post) = await Send(
+            app, HttpMethod.Post, "http://server.example.test:9090/settings", json: "{}", accept: "text/html");
+        using (post)
+        {
+            Assert.AreEqual(200, status);
+            Assert.IsNull(location);
+        }
+
+        await using App disabled = await Start(configure: ConfigureDisabledOwn, expectedMode: TlsCaMode.OwnCertificate);
+        (status, location, _, HttpResponseMessage disabledResponse) = await Send(
+            disabled, HttpMethod.Get, "http://server.example.test:9090/settings", accept: "text/html");
+        using (disabledResponse)
+        {
+            Assert.AreEqual(200, status);
+            Assert.IsNull(location);
+        }
+
+        void ConfigureOwn(TlsCaOptions options)
+        {
+            options.CertificatePath = pfx;
+            options.CertificatePassword = "redirect-test";
+        }
+
+        void ConfigureDisabledOwn(TlsCaOptions options)
+        {
+            ConfigureOwn(options);
+            options.RedirectOwnCertificateHttp = false;
+        }
+    }
+
+    [TestMethod]
+    [DataRow(TlsCaMode.Off)]
+    [DataRow(TlsCaMode.KestrelCertificate)]
+    public async Task ModesWithoutLibraryCertificate_DoNotRedirect(TlsCaMode mode)
+    {
+        await using App app = await Start(tlsCa: mode != TlsCaMode.Off, expectedMode: mode);
+        (int status, string? location, _, HttpResponseMessage response) = await Send(
+            app, HttpMethod.Get, "http://pi.local:9090/settings", accept: "text/html");
+        using (response)
+        {
+            Assert.AreEqual(200, status);
+            Assert.IsNull(location);
         }
     }
 

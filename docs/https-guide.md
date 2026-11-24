@@ -40,11 +40,17 @@ In the certificate page's address, `<host>` is the {{ product }} {{ single.host_
 In the certificate page's address, `<host>` is the device's name or IP address. The secure address uses a name that {{ product }} chooses{% for b in builds %}{{ ";" if not loop.first else ":" }} for {{ b.name }}, `{{ b.name_pattern }}` (for example `{{ b.secure_example }}`){% endfor %}. The certificate page shows the exact secure address.
 {% endif %}
 
+{% if builds | selectattr('local_access') | list %}
+On builds that can be opened locally, find the address for another computer by opening the certificate page on the computer running {{ product }}, using its `localhost` address. **Address for other computers** shows the secure address with a **Copy secure address** button. Share that address with computers that already trust the CA. Scan the QR code on a phone to open the plain-HTTP setup address first; the phone can install the CA before the page forwards it to HTTPS. The secure address is shown as text on the host computer because that computer may not trust its own CA.
+
+The block also lists plain-HTTP IP addresses for the selected networks when available. If several are listed, use the address on the network shared with the other computer. Use it to reach setup on networks where `.local` names do not resolve. An IP address cannot make the built-in HTTPS certificate valid; the secure address still needs `.local` lookup.
+{% endif %}
+
 ## Set up a computer or phone
 
 Do this once on each computer or phone that opens the {{ ui_name }}.
 
-1. **Open the certificate page** from the table above.{% if builds | selectattr('http_redirects') | list %} Opening the plain address without the path (for example `{{ builds[0].http_any }}`) from another computer takes you there too.{% endif %}
+1. **Open the certificate page** from the table above.{% if builds | selectattr('http_redirects') | list %} Opening a plain-HTTP page from another computer takes you there too. The page remembers the path and query you opened, and forwards you to that page at the secure address after the trust check succeeds. API requests are left alone.{% endif %}
 
 2. **Check the fingerprint.** The page shows the CA's fingerprint. To be sure you are trusting the right device, compare it with one from a source you trust: the same page opened at the device itself, where that is possible, or your administrator.
 3. **Download and install the certificate.** The page offers the right file for your system and lists the steps. In short:
@@ -61,6 +67,8 @@ Do this once on each computer or phone that opens the {{ ui_name }}.
 
 Later visits need only the secure address. Bookmark it.
 
+If the check fails, install the certificate as described above. On apps that support plain HTTP, a secondary **Continue over HTTP** link also lets you use the original page without encryption for this browser session. This can help when `.local` names cannot be found. Apps that require HTTPS do not offer it. Use the app's certificate-page link to return and finish setup later. Closing the browser normally ends the choice, although browsers that restore session cookies may keep it.
+
 {% if sections.setup is defined %}
 {{ sections.setup }}
 
@@ -68,7 +76,7 @@ Later visits need only the secure address. Bookmark it.
 
 ## What to know
 
-- **The certificate is valid for one name only.** It works for the secure address in the table and for nothing else: not the bare computer name, not an IP address, and not `localhost`. An address such as `https://192.168.1.20{{ ":" ~ builds[0].https_port if builds[0].https_port != 443 else "" }}/` shows a certificate error even after the CA is installed. Always use the `.local` name.
+- **The certificate is valid for one name only.** It works for the secure address in the table and for nothing else: not the bare computer name, not an IP address, and not `localhost`. An address such as `https://192.168.1.20{{ ":" ~ builds[0].https_port if builds[0].https_port != 443 else "" }}/` shows a certificate error even after the CA is installed. Always use the `.local` name. If you continue past a warning at another HTTPS name, the certificate page checks the matching `.local` name before forwarding you with the same path and query; it cannot prevent that first warning. `localhost` is left alone.
 - **The CA cannot be misused for other sites.** It is restricted to that one name, so it cannot vouch for a bank, a mail server or any other address, even if someone stole its key. You install only the public certificate; no private key ever leaves {{ product }}.
 - **Your computer or phone must be able to find `.local` names.** Windows 10 and later, macOS, iPhone, iPad and most Linux desktops can. Android can from version 12. Some Linux systems need `avahi-daemon` and `libnss-mdns`. The lookup uses mDNS (UDP port 5353, multicast), so it fails across routers, on guest Wi-Fi that isolates devices from each other, and through a firewall that blocks multicast.
 - **Firewall.** The {{ product }} {{ single.host_term if single else 'device' }} must accept connections from your network on {% if single %}TCP ports {{ single.http_port }} and {{ single.https_port }}{% else %}the TCP ports in the table{% endif %}, and mDNS on UDP port 5353.{% if links.firewall is defined %} See [firewall settings]({{ links.firewall }}).{% endif %}
@@ -185,6 +193,7 @@ If your organization issues certificates, or you have one from a public authorit
 With your own certificate:
 
 - **The address is the name in your certificate**, on the same HTTPS port: `{{ _origin_own }}`. Your network's DNS must lead that name to the {{ product }} {{ own[0].host_term }}. The `.local` secure address is no longer offered.
+- **Plain-HTTP page visits use HTTPS** when the host matches a DNS name covered by your certificate. Other names, IP addresses and `localhost` are left alone.
 - **There is nothing to install** on computers and phones that already trust whoever issued the certificate. The certificate page shows a short notice in place of the downloads, and has no **Renew certificate** or **Reset identity** button.
 - **On Windows, intermediate certificates must be installed.** If your certificate was issued through an intermediate authority, install that authority's certificate in **Intermediate Certification Authorities** on the {{ product }} computer (**Manage computer certificates**). Windows sends only what it finds there; {{ product }} adds nothing to the certificate stores. On Linux the intermediates in the file are sent.
 - **Renewal is yours.** Replace the files before the certificate expires. {{ product }} starts using the new files by itself, with no restart, and its log warns from 30 days before the expiry.

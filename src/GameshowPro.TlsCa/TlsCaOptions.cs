@@ -85,6 +85,35 @@ public sealed class TlsCaOptions
     public bool RedirectHttpRoot { get; set; } = true;
 
     /// <summary>
+    /// Redirect plain-HTTP browser page navigations outside the management prefix to that page in
+    /// <see cref="TlsCaMode.BuiltInCa"/>. The original safe path and query are supplied as <c>returnTo</c>.
+    /// API requests and non-navigation requests continue to the app. Default true.
+    /// </summary>
+    public bool RedirectHttpNavigations { get; set; } = true;
+
+    /// <summary>
+    /// Redirect an HTTPS browser page navigation on a name other than the built-in certificate's mDNS name to
+    /// the management page on the same host, preserving a safe path and query for forwarding after a trust probe.
+    /// Loopback hosts and management endpoints are exempt. Default true.
+    /// </summary>
+    public bool RedirectHttpsHost { get; set; } = true;
+
+    /// <summary>
+    /// Redirect plain-HTTP browser page navigations in <see cref="TlsCaMode.OwnCertificate"/> to the HTTPS port
+    /// on the same host, only when that host matches a DNS subject alternative name of the loaded certificate.
+    /// Loopback hosts and management endpoints are exempt. Default true.
+    /// </summary>
+    public bool RedirectOwnCertificateHttp { get; set; } = true;
+
+    /// <summary>
+    /// Let a browser remain on its current address after the user chooses the management page's HTTP fallback.
+    /// When true (the default), a session cookie named <c>gsp-tlsca-http</c> with value <c>1</c> suppresses the
+    /// built-in CA's HTTP navigation and wrong-host HTTPS redirects. It never changes the management endpoints or gate.
+    /// Set false to require redirects even when a browser sends this cookie.
+    /// </summary>
+    public bool AllowHttpFallback { get; set; } = true;
+
+    /// <summary>
     /// The earliest time used for issuing: a system clock earlier than this is treated as this time. Defaults to
     /// <see cref="DefaultMinimumTime"/>, the library's build time.
     /// </summary>

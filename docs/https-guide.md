@@ -72,6 +72,10 @@ Later visits need only the secure address. Bookmark it.
 
 If the check fails, install the certificate as described above.{% if builds | selectattr('allow_http_fallback') | list %} {% if single or (builds | rejectattr('allow_http_fallback') | list | length == 0) %}A{% else %}On {{ builds | selectattr('allow_http_fallback') | map(attribute='name') | join(' and ') }}, a{% endif %} secondary **Continue over HTTP** link lets you use the original page without encryption for this browser session. This can help when `.local` names cannot be found.{% endif %}{% if builds | selectattr('allow_https_fallback') | list %} {% if single or (builds | rejectattr('allow_https_fallback') | list | length == 0) %}If you opened{% else %}On {{ builds | selectattr('allow_https_fallback') | map(attribute='name') | join(' and ') }}, if you opened{% endif %} the certificate page through HTTPS by IP or another name, **Continue on this address** lets you stay on that HTTPS address for this browser session after the `.local` check fails. The browser's certificate-name warning still appears before the page opens; this choice cannot remove it.{% endif %}{% if (builds | selectattr('allow_http_fallback') | list) or (builds | selectattr('allow_https_fallback') | list) %} Use the app's certificate-page link to return and finish setup later. Closing the browser normally ends a session choice, although browsers that restore session cookies may keep it.{% endif %}
 
+{% for b in builds if not b.allow_http_fallback and b.allow_https_fallback %}
+{% if single %}If you reached{% else %}For {{ b.name }}, if you reached{% endif %} the certificate page over plain HTTP and the check fails, **Open this address over HTTPS** takes you to setup on the same host using the HTTPS port. The page shows that address and explains the browser's certificate-name warning. After accepting the warning, use **Continue on this address** if the check still fails. Your original path and query are kept. This link is not shown on `localhost`.
+
+{% endfor %}
 {% if sections.setup is defined %}
 {{ sections.setup }}
 

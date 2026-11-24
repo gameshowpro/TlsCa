@@ -51,7 +51,11 @@ def main():
                     failures.append("soundling.md: guide offers the disabled HTTP escape.")
                 if "Continue on this address" not in text or "HTTPS IP addresses" not in text:
                     failures.append("soundling.md: guide does not explain the HTTPS IP escape.")
+                if "Open this address over HTTPS" not in text:
+                    failures.append("soundling.md: guide omits the HTTP-to-HTTPS setup link.")
             if example.name == "triggergate.yaml":
+                if "Open this address over HTTPS" in text:
+                    failures.append("triggergate.yaml: guide offers a link when HTTP fallback is enabled.")
                 if "Continue over HTTP" not in text:
                     failures.append("triggergate.yaml: guide omits the HTTP escape.")
                 if "On Windows service and Uno" not in text:
@@ -80,7 +84,7 @@ def main():
             "allow_http_fallback": False,
             "allow_https_fallback": False,
         })
-        if "Continue over HTTP" in no_escape or "Continue on this address" in no_escape:
+        if any(label in no_escape for label in ("Continue over HTTP", "Continue on this address", "Open this address over HTTPS")):
             failures.append("Guide with both escapes disabled still describes an escape.")
         result = subprocess.run(
             [sys.executable, "-m", "mkdocs", "build", "--strict", "--quiet", "--site-dir", str(site / "out")],

@@ -144,8 +144,16 @@ public sealed class ManagementPageTests
         Assert.Contains("location.replace(destination);", html);
         Assert.Contains("id=\"http-fallback\" hidden", html);
         Assert.Contains("id=\"https-fallback\" hidden", html);
+        Assert.Contains("id=\"http-to-https\" hidden", html);
+        Assert.Contains("id=\"open-this-https\" href=\"#\"", html);
+        Assert.Contains("id=\"this-https-address\"", html);
+        Assert.Contains("Open this address over HTTPS", html);
         Assert.Contains("i.allowHttpFallback !== true", html);
         Assert.Contains("i.allowHttpsFallback === true", html);
+        Assert.Contains("i.allowHttpFallback === false && i.allowHttpsFallback === true", html);
+        Assert.Contains("sameHostHttpsSetupDestination(i)", html);
+        Assert.Contains("setup.searchParams.set(\"returnTo\", safeReturnTo());", html);
+        Assert.Contains("i.httpsPort < 1 || i.httpsPort > 65535", html);
         Assert.Contains("info.allowHttpFallback !== true", html);
         Assert.Contains("info.allowHttpsFallback !== true", html);
         Assert.Contains("document.cookie = \"gsp-tlsca-http=1; Path=/; SameSite=Lax\"", html);

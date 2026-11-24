@@ -78,6 +78,7 @@ input[type=file]{max-width:100%;font:inherit}
 <div class="platforms" id="platforms"></div>
 <p id="http-fallback" hidden>If this computer cannot reach the .local name or trust the certificate, <a id="continue-http" href="#">Continue over HTTP</a> for this browser session.</p>
 <p id="https-fallback" hidden>If this computer cannot reach the .local name or trust the certificate, <a id="continue-https" href="#">Continue on this address</a> for this browser session. Your browser may continue to show a certificate warning.</p>
+<p id="http-to-https" hidden>If this computer cannot reach the .local name, <a id="open-this-https" href="#">Open this address over HTTPS</a> at <code id="this-https-address"></code>. Your browser may warn that the certificate names a different address; after accepting the warning, this page can offer Continue on this address.</p>
 </section>
 
 <section id="manage" hidden>
@@ -229,6 +230,21 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     } catch (_) { return null; }
   }
 
+  function sameHostHttpsSetupDestination(i) {
+    if (location.protocol !== "http:" || isLoopback() || !Number.isInteger(i.httpsPort)
+        || i.httpsPort < 1 || i.httpsPort > 65535) { return null; }
+    try {
+      var setup = new URL(location.origin);
+      if (setup.protocol !== "http:" || setup.hostname.toLowerCase() !== location.hostname.toLowerCase()) { return null; }
+      setup.protocol = "https:";
+      setup.port = String(i.httpsPort);
+      setup.pathname = P;
+      setup.search = "";
+      setup.searchParams.set("returnTo", safeReturnTo());
+      return setup.href;
+    } catch (_) { return null; }
+  }
+
   function renderShare(i) {
     var box = $("other-computers");
     box.hidden = !isLoopback();
@@ -335,6 +351,9 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     $("install").hidden = false;
     $("http-fallback").hidden = true;
     $("https-fallback").hidden = true;
+    $("http-to-https").hidden = true;
+    $("open-this-https").href = "#";
+    $("this-https-address").textContent = "";
     httpsEscapeReady = false;
     $("manage").hidden = false;
     renderOwn(i);
@@ -406,6 +425,9 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     $("install").hidden = true;
     $("http-fallback").hidden = true;
     $("https-fallback").hidden = true;
+    $("http-to-https").hidden = true;
+    $("open-this-https").href = "#";
+    $("this-https-address").textContent = "";
     httpsEscapeReady = false;
     setGateCountdown(j);
     explainGate(j.gate, true);
@@ -467,6 +489,9 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     var url = httpsUrl(i), destination = secureDestination(i);
     $("http-fallback").hidden = true;
     $("https-fallback").hidden = true;
+    $("http-to-https").hidden = true;
+    $("open-this-https").href = "#";
+    $("this-https-address").textContent = "";
     httpsEscapeReady = false;
     if (location.origin === new URL(url).origin) {
       showProbe("You are connected securely, so this browser trusts this device.", "ok");
@@ -513,6 +538,13 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         $("http-fallback").hidden = isLoopback() || i.allowHttpFallback !== true || !sameHostHttpDestination(i);
         httpsEscapeReady = i.allowHttpsFallback === true && !!sameHostHttpsDestination(i);
         $("https-fallback").hidden = !httpsEscapeReady;
+        var httpsSetup = i.allowHttpFallback === false && i.allowHttpsFallback === true
+          ? sameHostHttpsSetupDestination(i) : null;
+        if (httpsSetup) {
+          $("open-this-https").href = httpsSetup;
+          $("this-https-address").textContent = new URL("/", httpsSetup).href;
+          $("http-to-https").hidden = false;
+        }
       });
   }
 

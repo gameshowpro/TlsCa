@@ -47,6 +47,9 @@ internal sealed class OwnCertificate : IDisposable
     /// <summary>The TLS certificate context to serve.</summary>
     public SslStreamCertificateContext Context { get; }
 
+    /// <summary>The server leaf used for Kestrel's per-handshake certificate check.</summary>
+    public X509Certificate2 ServerCertificate => _serverCertificate;
+
     /// <summary>The leaf's subject.</summary>
     public string Subject { get; }
 

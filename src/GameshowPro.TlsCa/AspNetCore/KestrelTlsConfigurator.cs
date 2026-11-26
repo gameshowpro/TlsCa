@@ -10,34 +10,29 @@ namespace GameshowPro.TlsCa.AspNetCore;
 /// (<c>UseUrls</c>, <c>ASPNETCORE_URLS</c>); when both exist it keeps the listeners and ignores the URLs. Adding our
 /// HTTPS <c>Listen</c> call would therefore silently cancel the app's HTTP URLs, so they are re-applied here as
 /// listeners (also in <see cref="TlsCaMode.Off"/>, so <see cref="TlsCaOptions.HttpPort"/> is bound the same way when the
-/// app declared none). The certificate source is resolved (and so the identity or certificate loaded) before any
-/// listener is added. The HTTPS listener is added even when there is no certificate, so a reset or a fixed file brings
-/// HTTPS up on it without a restart.
+/// app declared none). The certificate source is resolved (and so the identity or certificate loaded) before Kestrel
+/// binds. The HTTPS listener is added even when there is no certificate, so a reset or a fixed file brings
+/// HTTPS up on it without a restart. When <see cref="TlsCaOptions.AppOwnsListeners"/> is true, this configurator adds
+/// no listeners; the application configures Kestrel and can use <see cref="ITlsCaHttps"/> for its HTTPS defaults.
 /// </remarks>
 internal sealed partial class KestrelTlsConfigurator(IServiceProvider services, TlsCaModeResolution resolution, TlsCaOptions options, IConfiguration configuration, ILogger<KestrelTlsConfigurator> logger) : IConfigureOptions<KestrelServerOptions>
 {
     public void Configure(KestrelServerOptions kestrel)
     {
+        if (options.AppOwnsListeners)
+        {
+            return;
+        }
+
         switch (resolution.Mode)
         {
             case TlsCaMode.BuiltInCa:
-                TlsIdentityManager manager = services.GetRequiredService<TlsIdentityManager>();
+                ITlsCaHttps httpsProvider = services.GetRequiredService<ITlsCaHttps>();
                 AddHttpListeners(kestrel);
                 kestrel.ListenAnyIP(
                     options.HttpsPort,
-                    ConfigureBuiltInListener);
+                    listen => listen.UseHttps(httpsProvider.Configure));
                 break;
-
-                void ConfigureBuiltInListener(ListenOptions listen) => listen.UseHttps(ConfigureBuiltInHttps);
-
-                void ConfigureBuiltInHttps(HttpsConnectionAdapterOptions https)
-                {
-                    https.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
-                    // Read per handshake, so a renewed or reset leaf is served to the next connection without a restart.
-                    // While no identity is in force there is no certificate, and the handshake fails (Kestrel logs that
-                    // at Debug).
-                    https.ServerCertificateSelector = (_, _) => manager.CurrentServerCertificateOrDefault;
-                }
 
             case TlsCaMode.OwnCertificate:
                 OwnCertificateSource source = services.GetRequiredService<OwnCertificateSource>();

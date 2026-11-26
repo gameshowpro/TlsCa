@@ -29,7 +29,7 @@ internal static class AddressSuggestions
         IEnumerable<IPAddress> addresses;
         if (scopes is not null)
         {
-            addresses = scopes.Select(static scope => scope.LocalAddress);
+            addresses = scopes.SelectMany(static scope => scope.LocalAddresses);
         }
         else if (Normalize(localAddress) is { } local && IsUsable(local))
         {

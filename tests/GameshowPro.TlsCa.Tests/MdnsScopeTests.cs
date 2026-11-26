@@ -23,10 +23,34 @@ public sealed class MdnsScopeTests
     {
         _ = Assert.ThrowsExactly<ArgumentException>(() => new TlsCaMdnsScope("", IPAddress.Loopback));
         _ = Assert.ThrowsExactly<ArgumentNullException>(() => new TlsCaMdnsScope(null!, IPAddress.Loopback));
-        _ = Assert.ThrowsExactly<ArgumentNullException>(() => new TlsCaMdnsScope("nic", null!));
+        _ = Assert.ThrowsExactly<ArgumentNullException>(() => new TlsCaMdnsScope("nic", (IPAddress)null!));
         _ = Assert.ThrowsExactly<ArgumentException>(() => s_scopeA with { NetworkInterfaceId = "" });
         _ = Assert.ThrowsExactly<ArgumentNullException>(() => s_scopeA with { LocalAddress = null! });
         Assert.AreEqual(new TlsCaMdnsScope("nic-a", IPAddress.Parse("192.0.2.10")), s_scopeA);
+        Assert.AreEqual(s_scopeA, new TlsCaMdnsScope(NetworkInterfaceId: "nic-a", LocalAddress: IPAddress.Parse("192.0.2.10")));
+        (string nic, IPAddress address) = s_scopeA;
+        Assert.AreEqual("nic-a", nic);
+        Assert.AreEqual(IPAddress.Parse("192.0.2.10"), address);
+        Assert.AreEqual(new TlsCaMdnsScope("nic-a", IPAddress.Parse("192.0.2.11")), s_scopeA with { LocalAddress = IPAddress.Parse("192.0.2.11") });
+    }
+
+    [TestMethod]
+    public void Scope_SnapshotsAndComparesTheCompleteAddressSet()
+    {
+        IPAddress mutable = IPAddress.Parse("fe80::10%12");
+        List<IPAddress> addresses = [IPAddress.Parse("192.0.2.10"), mutable];
+        TlsCaMdnsScope scope = new("nic-a", addresses);
+        addresses.Clear();
+        mutable.ScopeId = 13;
+
+        CollectionAssert.AreEqual(new[] { IPAddress.Parse("192.0.2.10"), IPAddress.Parse("fe80::10%12") }, scope.LocalAddresses.ToArray());
+        scope.LocalAddresses.Last().ScopeId = 99;
+        CollectionAssert.AreEqual(new[] { IPAddress.Parse("192.0.2.10"), IPAddress.Parse("fe80::10%12") }, scope.LocalAddresses.ToArray());
+        Assert.AreEqual(scope, new TlsCaMdnsScope("nic-a", (IReadOnlyCollection<IPAddress>)[IPAddress.Parse("fe80::10%12"), IPAddress.Parse("192.0.2.10"), IPAddress.Parse("192.0.2.10")]));
+        Assert.AreEqual(scope.GetHashCode(), new TlsCaMdnsScope("nic-a", (IReadOnlyCollection<IPAddress>)[IPAddress.Parse("fe80::10%12"), IPAddress.Parse("192.0.2.10")]).GetHashCode());
+        Assert.AreNotEqual(scope, scope with { LocalAddresses = [IPAddress.Parse("192.0.2.11")] });
+        _ = Assert.ThrowsExactly<ArgumentException>(() => new TlsCaMdnsScope("nic-a", (IReadOnlyCollection<IPAddress>)[]));
+        _ = Assert.ThrowsExactly<ArgumentNullException>(() => new TlsCaMdnsScope("nic-a", (IReadOnlyCollection<IPAddress>)null!));
     }
 
     [TestMethod]
@@ -61,6 +85,7 @@ public sealed class MdnsScopeTests
         {
             Assert.IsNull(advertisement.Options.NetworkInterfaceId);
             Assert.IsNull(advertisement.Options.LocalAddress);
+            Assert.IsNull(advertisement.Options.LocalAddresses);
             Assert.AreEqual(harness.Name, advertisement.Options.InstanceName);
             Assert.AreEqual(harness.Name, advertisement.Options.HostName);
         }
@@ -79,7 +104,8 @@ public sealed class MdnsScopeTests
         foreach (FakeAdvertisement advertisement in started)
         {
             Assert.AreEqual("nic-c", advertisement.Options.NetworkInterfaceId);
-            Assert.AreEqual(IPAddress.Parse("2001:db8::30"), advertisement.Options.LocalAddress);
+            Assert.IsNull(advertisement.Options.LocalAddress);
+            CollectionAssert.AreEqual(new[] { IPAddress.Parse("2001:db8::30") }, advertisement.Options.LocalAddresses!.ToArray());
             Assert.AreEqual(harness.Name, advertisement.Options.HostName);
         }
     }
@@ -93,6 +119,71 @@ public sealed class MdnsScopeTests
         await harness.WaitChecks(3);
 
         Assert.HasCount(2, harness.Mdns.Created);
+    }
+
+    [TestMethod]
+    public async Task MultiAddressScope_UsesOneRegistrationPair_AndOrderChangesDoNotRestartIt()
+    {
+        TlsCaMdnsScope scope = new("nic-a", (IReadOnlyCollection<IPAddress>)[IPAddress.Parse("192.0.2.10"), IPAddress.Parse("fd00::10")]);
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [scope]);
+        FakeAdvertisement[] original = [.. await harness.WaitForStarted(2)];
+        Assert.IsTrue(original.All(advertisement => advertisement.Options.LocalAddress is null));
+        Assert.IsTrue(original.All(advertisement => advertisement.Options.LocalAddresses!.Count == 2));
+
+        harness.Options.MdnsScopes = [new TlsCaMdnsScope("nic-a", (IReadOnlyCollection<IPAddress>)[IPAddress.Parse("fd00::10"), IPAddress.Parse("192.0.2.10")])];
+        await harness.WaitChecks(3);
+        CollectionAssert.AreEqual(original, harness.Mdns.Created.ToArray());
+        Assert.IsTrue(original.All(advertisement => !advertisement.Disposed));
+    }
+
+    [TestMethod]
+    public async Task ChangedAddressSet_WithdrawsOldPairBeforeCreatingReplacement_AndKeepsOtherAdapter()
+    {
+        TlsCaMdnsScope original = new("nic-a", (IReadOnlyCollection<IPAddress>)[IPAddress.Parse("192.0.2.10"), IPAddress.Parse("fd00::10")]);
+        TlsCaMdnsScope changed = new("nic-a", (IReadOnlyCollection<IPAddress>)[IPAddress.Parse("192.0.2.11"), IPAddress.Parse("fd00::10")]);
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [original, s_scopeB]);
+        _ = await harness.WaitForStarted(4);
+        FakeAdvertisement[] old = harness.Mdns.For(original);
+        FakeAdvertisement[] untouched = harness.Mdns.For(s_scopeB);
+        TaskCompletionSource<bool> goodbye = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        old[0].DisposeGate = goodbye;
+
+        harness.Options.MdnsScopes = [changed, s_scopeB];
+        try
+        {
+            await harness.WaitUntil(() => old[0].DisposeRequested, "old scope goodbye to begin");
+            await harness.WaitChecks(2);
+            Assert.HasCount(2, harness.Mdns.For(original));
+            Assert.IsEmpty(harness.Mdns.For(changed));
+        }
+        finally
+        {
+            _ = goodbye.TrySetResult(true);
+        }
+
+        await harness.WaitUntil(() => harness.Mdns.For(changed).Count(advertisement => advertisement.Started) == 2, "replacement scope to start");
+        Assert.IsTrue(old.All(advertisement => advertisement.Disposed));
+        Assert.IsFalse(harness.Mdns.CreatedWhileSameAdapterActive);
+        CollectionAssert.AreEqual(untouched, harness.Mdns.For(s_scopeB));
+        Assert.IsTrue(untouched.All(advertisement => !advertisement.Disposed));
+    }
+
+    [TestMethod]
+    public async Task RetainedHandles_ClearConflictOnRecovery_WithoutRestarting()
+    {
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [s_scopeA]);
+        FakeAdvertisement[] original = [.. await harness.WaitForStarted(2)];
+        int changed = 0;
+        harness.Status.Changed += (_, _) => Interlocked.Increment(ref changed);
+
+        original[0].Failure = ConflictFailure;
+        await harness.WaitUntil(() => harness.Status.NameConflict, "name conflict to appear");
+        original[0].Failure = null;
+        await harness.WaitUntil(() => !harness.Status.NameConflict, "name conflict to clear after recovery");
+
+        Assert.AreEqual(2, Volatile.Read(ref changed));
+        CollectionAssert.AreEqual(original, harness.Mdns.Created.ToArray());
+        Assert.IsTrue(original.All(advertisement => !advertisement.Disposed));
     }
 
     [TestMethod]
@@ -434,7 +525,12 @@ public sealed class MdnsScopeTests
             TempDirectory directory = new();
             TestLogProvider logs = new();
             ILoggerFactory loggers = LoggerFactory.Create(builder => builder.AddProvider(logs).SetMinimumLevel(LogLevel.Debug));
-            TlsIdentityManager manager = TestManagers.Create(directory.CreateStore(), TimeProvider.System, hostName, o => o.ExplicitName = explicitName);
+            TlsIdentityManager manager = TestManagers.Create(directory.CreateStore(), TimeProvider.System, hostName, o =>
+            {
+                o.ExplicitName = explicitName;
+                // These tests never perform a TLS handshake; keep mDNS behavior independent of the Windows profile key container.
+                o.ServerCertificateFactoryOverride = static (leaf, key) => leaf.CopyWithPrivateKey(key);
+            });
             _ = await manager.LoadOrCreate();
             TlsCaOptions options = TestManagers.Options(o => (o.HttpPort, o.HttpsPort) = (9090, 9190));
             configure?.Invoke(options);
@@ -487,6 +583,8 @@ public sealed class MdnsScopeTests
         private readonly Dictionary<string, string?> _startFailures = [];
         private readonly Dictionary<string, int> _startAttempts = [];
 
+        public bool CreatedWhileSameAdapterActive { get; private set; }
+
         public IReadOnlyList<FakeAdvertisement> Created
         {
             get
@@ -499,7 +597,8 @@ public sealed class MdnsScopeTests
         }
 
         public FakeAdvertisement[] For(TlsCaMdnsScope scope) =>
-            [.. Created.Where(advertisement => advertisement.Options.NetworkInterfaceId == scope.NetworkInterfaceId)];
+            [.. Created.Where(advertisement => advertisement.Options.NetworkInterfaceId == scope.NetworkInterfaceId
+                && advertisement.Options.LocalAddresses?.ToHashSet().SetEquals(scope.LocalAddresses) == true)];
 
         /// <summary>From now on every start in <paramref name="scope"/> fails with <paramref name="failure"/> (null: succeeds).</summary>
         public void FailStart(TlsCaMdnsScope scope, string? failure)
@@ -523,6 +622,8 @@ public sealed class MdnsScopeTests
             FakeAdvertisement advertisement = new(properties, options, StartFailure);
             lock (_lock)
             {
+                CreatedWhileSameAdapterActive |= _created.Any(previous =>
+                    previous.Options.NetworkInterfaceId == options.NetworkInterfaceId && previous.Started && !previous.Disposed);
                 _created.Add(advertisement);
             }
 
@@ -549,6 +650,11 @@ public sealed class MdnsScopeTests
     {
         private volatile bool _started;
         private volatile bool _disposed;
+        private volatile bool _disposeRequested;
+
+        public TaskCompletionSource<bool>? DisposeGate { get; set; }
+
+        public bool DisposeRequested => _disposeRequested;
 
         public InstanceProperties Properties => properties;
 
@@ -576,10 +682,15 @@ public sealed class MdnsScopeTests
             return Task.CompletedTask;
         }
 
-        public ValueTask DisposeAsync()
+        public async ValueTask DisposeAsync()
         {
+            _disposeRequested = true;
+            if (DisposeGate is { } gate)
+            {
+                _ = await gate.Task;
+            }
+
             _disposed = true;
-            return ValueTask.CompletedTask;
         }
     }
 

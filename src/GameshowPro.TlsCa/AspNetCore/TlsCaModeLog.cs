@@ -19,7 +19,7 @@ internal sealed partial class TlsCaModeLog(TlsCaModeResolution resolution, TlsCa
                 LogOff();
                 break;
 
-            case TlsCaMode.OwnCertificate when resolution.KestrelSetting is { } kestrelSetting:
+            case TlsCaMode.OwnCertificate when !options.AppOwnsListeners && resolution.KestrelSetting is { } kestrelSetting:
                 string key = string.IsNullOrWhiteSpace(options.ConfigurationSection)
                     ? $"{nameof(TlsCaOptions)}.{nameof(TlsCaOptions.CertificatePath)}"
                     : $"{options.ConfigurationSection.Trim()}:{TlsCaConfiguration.CertificatePathKey}";

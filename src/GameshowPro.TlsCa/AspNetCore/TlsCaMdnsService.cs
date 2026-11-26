@@ -185,7 +185,7 @@ internal sealed partial class TlsCaMdnsService(TlsIdentityManager manager, TlsCa
                                 InstanceName = name,
                                 HostName = name,
                                 NetworkInterfaceId = scope?.NetworkInterfaceId,
-                                LocalAddress = scope?.LocalAddress,
+                                LocalAddresses = scope?.LocalAddresses,
                                 TxtProperties = new Dictionary<string, string> { ["path"] = path }.ToFrozenDictionary(),
                             },
                             logger);
@@ -214,7 +214,7 @@ internal sealed partial class TlsCaMdnsService(TlsIdentityManager manager, TlsCa
     }
 
     private static string Describe(TlsCaMdnsScope? scope) =>
-        scope is null ? "every eligible interface" : $"interface {scope.NetworkInterfaceId}, address {scope.LocalAddress}";
+        scope is null ? "every eligible interface" : $"interface {scope.NetworkInterfaceId}, address {string.Join(", ", scope.LocalAddresses)}";
 
     private static bool IsConflict(string? failure) =>
         failure is not null && s_conflictFailures.Any(fragment => failure.Contains(fragment, StringComparison.Ordinal));

@@ -181,4 +181,20 @@ public sealed class AddressTests
             s_scopedHttpsAddresses,
             AddressSuggestions.FallbackAddresses(IPAddress.Parse("10.183.49.101"), scopes, [real], 9190, https: true));
     }
+    [TestMethod]
+    public async Task InfoJson_MultiAddressScopeSuggestsEveryUsableAddress()
+    {
+        await using TestApp app = await TestApp.Start(static options => options.MdnsScopes =
+        [
+            new TlsCaMdnsScope("nic-a", (IReadOnlyCollection<IPAddress>)[
+                IPAddress.Parse("fd00::12"), IPAddress.Parse("10.147.20.159"),
+                IPAddress.Parse("fe80::12%4"), IPAddress.Loopback]),
+        ]);
+
+        using HttpResponseMessage response = await app.Get("/.well-known/gameshowpro/info.json");
+        JsonObject info = JsonNode.Parse(await response.Content.ReadAsStringAsync())!.AsObject();
+        CollectionAssert.AreEqual(s_scopedAddresses,
+            info["fallbackAddresses"]!.AsArray().Select(static item => item!.GetValue<string>()).ToArray());
+        Assert.IsNull(info["fallbackAddress"]);
+    }
 }

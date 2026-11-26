@@ -86,7 +86,7 @@ If the check fails, install the certificate as described above.{% if builds | se
 - **The certificate is valid for one name only.** It works for the secure address in the table and for nothing else: not the bare computer name, not an IP address, and not `localhost`. An address such as `https://192.168.1.20{{ ":" ~ builds[0].https_port if builds[0].https_port != 443 else "" }}/` shows a certificate warning even after the CA is installed. Use the `.local` name when your computer can find it. If you continue past a warning at another HTTPS name, the certificate page checks the matching `.local` name before forwarding you with the same path and query; it cannot prevent that first warning. `localhost` is left alone.
 - **The CA cannot be misused for other sites.** It is restricted to that one name, so it cannot vouch for a bank, a mail server or any other address, even if someone stole its key. You install only the public certificate; no private key ever leaves {{ product }}.
 - **The warning-free address needs `.local` lookup.** Windows 10 and later, macOS, iPhone, iPad and most Linux desktops can find `.local` names. Android can from version 12. Some Linux systems need `avahi-daemon` and `libnss-mdns`. The lookup uses mDNS (UDP port 5353, multicast), so it fails across routers, on guest Wi-Fi that isolates devices from each other, and through a firewall that blocks multicast.{% if builds | selectattr('allow_https_fallback') | list %} On builds that offer **Continue on this address**, HTTPS by IP can still work after you accept the browser's certificate-name warning.{% endif %}{{ '\n' }}
-- **Firewall.** The {{ product }} {{ single.host_term if single else 'device' }} must accept connections from your network on {% if single %}TCP ports {{ single.http_port }} and {{ single.https_port }}{% else %}the TCP ports in the table{% endif %}, and mDNS on UDP port 5353.{% if links.firewall is defined %} See [firewall settings]({{ links.firewall }}).{% endif %}
+- **Firewall and network selection.** The {{ product }} {{ single.host_term if single else 'device' }} must accept connections from your network on {% if single %}TCP ports {{ single.http_port }} and {{ single.https_port }}{% else %}the TCP ports in the table{% endif %}, and mDNS on UDP port 5353.{% if links.firewall is defined %} See [firewall settings]({{ links.firewall }}).{% endif %} If the app is configured to listen on selected networks, use an address on one of those networks; mDNS advertisement scopes alone do not limit which addresses accept connections.
 
 - **Firefox keeps its own list of trusted certificates.** Import the file into Firefox as well (**Settings**, **Privacy & Security**, **View Certificates**, **Authorities**), or on Windows turn on `security.enterprise_roots.enabled` in `about:config`.
 - **The clock matters.** A computer or phone whose date is wrong may reject the certificate as not yet valid or expired.
@@ -217,6 +217,21 @@ With your own certificate:
 {% endif %}
 {% if sections.settings is defined %}
 ## Settings
+
+Application maintainers who configure Kestrel endpoints themselves can let TlsCa provide the certificate selector. Call `AddGameshowProTlsCa` before adding generated HTTPS endpoints, then compose the app's HTTPS defaults and TlsCa in one action:
+
+```csharp
+ITlsCaHttps tls = kestrel.ApplicationServices.GetRequiredService<ITlsCaHttps>();
+kestrel.ConfigureHttpsDefaults(https =>
+{
+    // Apply the app's other HTTPS defaults here.
+    tls.Configure(https);
+});
+```
+
+Set `TlsCaOptions.AppOwnsListeners = true` (default false) when the app owns endpoint configuration. The library then adds no listeners in any mode; the app configures all HTTP and HTTPS endpoints itself. `HttpPort` and `HttpsPort` remain the app's actual ports for redirects and discovery. A `TlsCaMdnsScope` can carry the complete usable address set for one adapter; give publications sharing a host name the same set, and withdraw their handles before changing it. For fallback addresses shown by the certificate page, explicit scopes contribute every usable address.
+
+`ITlsCaHttps.Configure` selects the current certificate for each handshake in built-in CA and own-certificate modes; it does nothing when TlsCa does not supply a certificate.
 
 {{ sections.settings }}
 

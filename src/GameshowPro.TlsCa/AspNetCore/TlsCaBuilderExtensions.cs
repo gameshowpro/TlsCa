@@ -59,6 +59,15 @@ public static partial class TlsCaBuilderExtensions
     /// and <see cref="TlsCaMode.OwnCertificate"/>; in <see cref="TlsCaMode.KestrelCertificate"/> nothing is added.
     /// </para>
     /// <para>
+    /// With <see cref="TlsCaOptions.AppOwnsListeners"/> true, no mode adds HTTP or HTTPS listeners. The application
+    /// configures its own Kestrel endpoints and uses <see cref="ITlsCaHttps"/> in one
+    /// <c>ConfigureHttpsDefaults</c> action when <see cref="ITlsCaHttps.SuppliesCertificate"/> is true. The certificate
+    /// is chosen for each handshake, including endpoints added by a configuration reload. Set up generated HTTPS
+    /// endpoint configuration after this call, or give Kestrel a dedicated configuration source: HTTPS endpoints already
+    /// present in the app configuration at this call count as an external Kestrel certificate for mode resolution.
+    /// <see cref="TlsCaOptions.HttpPort"/> and <see cref="TlsCaOptions.HttpsPort"/> still supply the advertised ports.
+    /// </para>
+    /// <para>
     /// A stored identity that cannot be used, or a first identity that cannot be created (an
     /// <see cref="IdentityStoreException"/>), does not stop the app: it is logged as an error and the app starts without an
     /// identity. The HTTPS listener is still bound but its handshakes fail, the certificate endpoints answer 503, the
@@ -95,6 +104,7 @@ public static partial class TlsCaBuilderExtensions
             _ = services.AddSingleton(options);
             _ = services.AddSingleton(gate);
             _ = services.AddSingleton(resolution);
+            _ = services.AddSingleton<ITlsCaHttps, TlsCaHttps>();
             _ = services.AddSingleton(provider => new TlsCaStatus(
                 resolution,
                 options,

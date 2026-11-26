@@ -41,6 +41,13 @@ public sealed class TlsCaOptions
     public int HttpsPort { get; set; }
 
     /// <summary>
+    /// When true, the application configures all Kestrel HTTP and HTTPS listeners. <see cref="HttpPort"/> and
+    /// <see cref="HttpsPort"/> still describe the ports used for addresses, redirects and mDNS. The library supplies
+    /// its certificate through <see cref="AspNetCore.ITlsCaHttps"/> in built-in CA and own-certificate modes. Default false.
+    /// </summary>
+    public bool AppOwnsListeners { get; set; }
+
+    /// <summary>
     /// The app's own server certificate: a PKCS#12 file (<c>.pfx</c>, <c>.p12</c>), or a PEM file holding the certificate
     /// first and then any intermediates (and the private key, unless <see cref="CertificateKeyPath"/> is set). When set,
     /// and HTTPS is not off, the ASP.NET Core integration runs in <see cref="TlsCaMode.OwnCertificate"/>: it serves this
@@ -146,12 +153,13 @@ public sealed class TlsCaOptions
     /// Where the mDNS advertisement runs (with <see cref="AdvertiseMdns"/>). Null (the default): on every interface
     /// GameshowPro.Mdns finds eligible. Empty: nowhere, for as long as it stays empty. Otherwise one advertisement (the
     /// <c>_https._tcp</c> and <c>_http._tcp</c> pair) per scope, each started, retried and reporting a name conflict on
-    /// its own; duplicates count once. Use one scope per interface.
+    /// its own; duplicates count once. Use one scope per interface, with its complete set of selected addresses.
     /// <para>
     /// May be replaced from any thread while the app runs, on the options instance the library keeps: the advertisement
     /// follows within two seconds, withdrawing scopes that left the list and starting new ones, while scopes still in the
     /// list keep running untouched. The list is copied when set, so change it by setting a new one. This affects mDNS
-    /// only: the HTTPS listener still accepts connections on every interface.
+    /// only. With the default library-owned listener, HTTPS still accepts connections on every interface; when
+    /// <see cref="AppOwnsListeners"/> is true, the application chooses its listening addresses independently.
     /// </para>
     /// </summary>
     /// <exception cref="ArgumentException">The list holds a null element.</exception>

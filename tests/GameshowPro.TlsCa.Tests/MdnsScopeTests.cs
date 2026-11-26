@@ -205,6 +205,302 @@ public sealed class MdnsScopeTests
     // Following the list while running
 
     [TestMethod]
+    public async Task ApplyScopes_WithoutIdentityStoresScopesAndRunsCallbackWithoutStarting()
+    {
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [], loadIdentity: false);
+        bool callbackRan = false;
+        TlsCaMdnsApplyResult result = await harness.Service.ApplyScopesAsync([s_scopeA], _ =>
+        {
+            callbackRan = true;
+            return Task.CompletedTask;
+        });
+
+        Assert.IsTrue(callbackRan);
+        Assert.IsTrue(result.AdvertisingEnabled);
+        Assert.IsFalse(result.IdentityAvailable);
+        Assert.IsEmpty(result.StartedScopes);
+        Assert.IsEmpty(result.StartFailures);
+        Assert.IsEmpty(harness.Mdns.Created);
+        CollectionAssert.AreEqual(new[] { s_scopeA }, harness.Options.MdnsScopes!.ToArray());
+
+        _ = await harness.Manager.LoadOrCreate();
+        _ = await harness.WaitForStarted(2);
+    }
+
+    [TestMethod]
+    public async Task ApplyScopes_RequiresRunningHostService()
+    {
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [], startService: false);
+        _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => harness.Service.ApplyScopesAsync([s_scopeA]));
+        await harness.StartService();
+        TlsCaMdnsApplyResult applied = await harness.Service.ApplyScopesAsync([s_scopeA]);
+        Assert.IsTrue(applied.IdentityAvailable);
+        await harness.StopService();
+        _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => harness.Service.ApplyScopesAsync([s_scopeB]));
+    }
+
+    [TestMethod]
+    public async Task ApplyScopes_HostStopCancelsAwaitingCallbackAndCompletesShutdown()
+    {
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [s_scopeA]);
+        _ = await harness.WaitForStarted(2);
+        TaskCompletionSource<bool> entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<TlsCaMdnsApplyResult> apply = harness.Service.ApplyScopesAsync([s_scopeB], async token =>
+        {
+            entered.SetResult(true);
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        });
+        _ = await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await harness.StopService().WaitAsync(TimeSpan.FromSeconds(10));
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => apply);
+        Assert.IsTrue(harness.Mdns.For(s_scopeA).All(advertisement => advertisement.Disposed));
+        Assert.IsEmpty(harness.Mdns.For(s_scopeB));
+    }
+
+    [TestMethod]
+    public async Task ApplyScopes_WaitsForGoodbyesThenCallbackThenNewStarts_AndKeepsUnchangedScope()
+    {
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [s_scopeA, s_scopeB]);
+        _ = await harness.WaitForStarted(4);
+        FakeAdvertisement[] old = harness.Mdns.For(s_scopeA);
+        FakeAdvertisement[] unchanged = harness.Mdns.For(s_scopeB);
+        TaskCompletionSource<bool> goodbye = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<bool> callback = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<bool> start = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<bool> callbackEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        old[0].DisposeGate = goodbye;
+        harness.Mdns.StartGate(s_scopeC, start);
+
+        try
+        {
+            Task<TlsCaMdnsApplyResult> apply = harness.Service.ApplyScopesAsync([s_scopeB, s_scopeC], async _ =>
+            {
+                Assert.IsTrue(old.All(advertisement => advertisement.Disposed));
+                callbackEntered.SetResult(true);
+                Assert.IsTrue(await callback.Task);
+            });
+            await harness.WaitUntil(() => old[0].DisposeRequested, "old scope goodbye to begin");
+            Assert.IsFalse(callbackEntered.Task.IsCompleted);
+            Assert.IsFalse(apply.IsCompleted);
+            Assert.IsEmpty(harness.Mdns.For(s_scopeC));
+
+            goodbye.SetResult(true);
+            _ = await callbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.IsEmpty(harness.Mdns.For(s_scopeC));
+            Assert.IsFalse(apply.IsCompleted);
+
+            callback.SetResult(true);
+            await harness.WaitUntil(() => harness.Mdns.For(s_scopeC).Length > 0, "new scope start to begin");
+            Assert.IsFalse(apply.IsCompleted);
+            start.SetResult(true);
+
+            TlsCaMdnsApplyResult result = await apply.WaitAsync(TimeSpan.FromSeconds(10));
+            CollectionAssert.AreEquivalent(new[] { s_scopeC }, result.StartedScopes.ToArray());
+            CollectionAssert.AreEquivalent(new[] { s_scopeB }, result.UnchangedScopes.ToArray());
+            Assert.IsEmpty(result.StartFailures);
+            CollectionAssert.AreEqual(unchanged, harness.Mdns.For(s_scopeB));
+            Assert.IsTrue(unchanged.All(advertisement => !advertisement.Disposed));
+        }
+        finally
+        {
+            _ = goodbye.TrySetResult(true);
+            _ = callback.TrySetResult(true);
+            _ = start.TrySetResult(true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyScopes_StartFailureIsReturnedAndCanBeRetried()
+    {
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = []);
+        harness.Mdns.FailStart(s_scopeA, ConflictFailure);
+
+        TlsCaMdnsApplyResult failed = await harness.Service.ApplyScopesAsync([s_scopeA]);
+        Assert.IsEmpty(failed.StartedScopes);
+        Assert.HasCount(1, failed.StartFailures);
+        Assert.AreEqual(s_scopeA, failed.StartFailures[0].Scope);
+        Assert.AreEqual(ConflictFailure, failed.StartFailures[0].Message);
+        Assert.IsTrue(failed.StartFailures[0].IsNameConflict);
+        Assert.IsTrue(harness.Mdns.For(s_scopeA).All(advertisement => advertisement.Disposed));
+
+        harness.Mdns.FailStart(s_scopeA, null);
+        await harness.WaitUntil(() => harness.Mdns.For(s_scopeA).Count(advertisement => advertisement.Started && !advertisement.Disposed) == 2, "failed scope to recover on its retry");
+        TlsCaMdnsApplyResult retried = await harness.Service.ApplyScopesAsync([s_scopeA]);
+        CollectionAssert.AreEquivalent(new[] { s_scopeA }, retried.UnchangedScopes.ToArray());
+        Assert.IsEmpty(retried.StartFailures);
+    }
+
+    [TestMethod]
+    public async Task ApplyScopes_SecondServiceFailureDisposesFirstServiceOfPair()
+    {
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = []);
+        harness.Mdns.FailStartService(s_scopeA, "_http", UnavailableFailure);
+
+        TlsCaMdnsApplyResult failed = await harness.Service.ApplyScopesAsync([s_scopeA]);
+        Assert.HasCount(1, failed.StartFailures);
+        Assert.AreEqual(UnavailableFailure, failed.StartFailures[0].Message);
+        Assert.IsFalse(failed.StartFailures[0].IsNameConflict);
+        FakeAdvertisement[] pair = harness.Mdns.For(s_scopeA);
+        Assert.HasCount(2, pair);
+        Assert.IsTrue(pair[0].Started);
+        Assert.IsTrue(pair.All(advertisement => advertisement.Disposed));
+
+        harness.Mdns.FailStartService(s_scopeA, "_http", null);
+        await harness.WaitUntil(() => harness.Mdns.For(s_scopeA).Count(advertisement => advertisement.Started && !advertisement.Disposed) == 2, "pair retry to succeed");
+    }
+
+    [TestMethod]
+    public async Task ApplyScopes_CopiesCallerCollectionAndSerializesConcurrentUpdates()
+    {
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [s_scopeA]);
+        _ = await harness.WaitForStarted(2);
+        TaskCompletionSource<bool> firstCallback = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<bool> firstEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        List<TlsCaMdnsScope> scopes = [s_scopeC];
+        try
+        {
+            Task<TlsCaMdnsApplyResult> first = harness.Service.ApplyScopesAsync([s_scopeB], async _ =>
+            {
+                firstEntered.SetResult(true);
+                Assert.IsTrue(await firstCallback.Task);
+            });
+            _ = await firstEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Task<TlsCaMdnsApplyResult> second = harness.Service.ApplyScopesAsync(scopes);
+            scopes[0] = s_scopeA;
+            Assert.IsFalse(second.IsCompleted);
+            firstCallback.SetResult(true);
+            _ = await first.WaitAsync(TimeSpan.FromSeconds(10));
+            _ = await second.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.IsTrue(harness.Mdns.For(s_scopeB).Any(advertisement => advertisement.Started && advertisement.Disposed));
+            Assert.IsTrue(harness.Mdns.For(s_scopeC).Count(advertisement => advertisement.Started && !advertisement.Disposed) == 2);
+            Assert.IsTrue(harness.Mdns.For(s_scopeA).All(advertisement => advertisement.Disposed));
+            await harness.WaitChecks(2);
+            Assert.IsTrue(harness.Mdns.For(s_scopeC).All(advertisement => !advertisement.Disposed));
+        }
+        finally
+        {
+            _ = firstCallback.TrySetResult(true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyScopes_CallbackFailureLeavesOnlyUnchangedScopeForPolling()
+    {
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [s_scopeA, s_scopeB]);
+        _ = await harness.WaitForStarted(4);
+        FakeAdvertisement[] unchanged = harness.Mdns.For(s_scopeB);
+
+        _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            harness.Service.ApplyScopesAsync([s_scopeB, s_scopeC], _ => throw new InvalidOperationException("consumer failed")));
+
+        await harness.WaitChecks(3);
+        Assert.IsTrue(harness.Mdns.For(s_scopeA).All(advertisement => advertisement.Disposed));
+        CollectionAssert.AreEqual(unchanged, harness.Mdns.For(s_scopeB));
+        Assert.IsEmpty(harness.Mdns.For(s_scopeC));
+        CollectionAssert.AreEquivalent(new[] { s_scopeB }, harness.Options.MdnsScopes!.ToArray());
+
+        TlsCaMdnsApplyResult retry = await harness.Service.ApplyScopesAsync([s_scopeB, s_scopeC]);
+        CollectionAssert.AreEquivalent(new[] { s_scopeC }, retry.StartedScopes.ToArray());
+    }
+
+    [TestMethod]
+    public async Task ApplyScopes_CancelledWhileWaitingDoesNotRunItsCallbackOrChangeScopes()
+    {
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [s_scopeA]);
+        _ = await harness.WaitForStarted(2);
+        TaskCompletionSource<bool> firstEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<bool> release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        using CancellationTokenSource cancel = new();
+        bool secondCallbackRan = false;
+        try
+        {
+            Task<TlsCaMdnsApplyResult> first = harness.Service.ApplyScopesAsync([s_scopeB], async _ =>
+            {
+                firstEntered.SetResult(true);
+                Assert.IsTrue(await release.Task);
+            });
+            _ = await firstEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Task<TlsCaMdnsApplyResult> second = harness.Service.ApplyScopesAsync([s_scopeC], _ =>
+            {
+                secondCallbackRan = true;
+                return Task.CompletedTask;
+            }, cancel.Token);
+            cancel.Cancel();
+            Task<TlsCaMdnsApplyResult> third = harness.Service.ApplyScopesAsync([s_scopeA]);
+            await harness.WaitChecks(1);
+            Assert.IsFalse(third.IsCompleted, "A cancelled queued call must not let a later call pass the blocked first call.");
+            release.SetResult(true);
+            _ = await first.WaitAsync(TimeSpan.FromSeconds(10));
+            _ = await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => second);
+            _ = await third.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.IsFalse(secondCallbackRan);
+            Assert.IsEmpty(harness.Mdns.For(s_scopeC));
+            CollectionAssert.AreEquivalent(new[] { s_scopeA }, harness.Options.MdnsScopes!.ToArray());
+        }
+        finally
+        {
+            _ = release.TrySetResult(true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyScopes_PolledStartInProgressWaitsForItsFirstAttempt()
+    {
+        TaskCompletionSource<bool> start = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using Harness harness = await Harness.Start(
+            options => options.MdnsScopes = [s_scopeA],
+            configureMdns: mdns => mdns.StartGate(s_scopeA, start));
+        try
+        {
+            await harness.WaitUntil(() => harness.Mdns.For(s_scopeA).Length > 0, "polled start to begin");
+            Task<TlsCaMdnsApplyResult> apply = harness.Service.ApplyScopesAsync([s_scopeA]);
+            Assert.IsFalse(apply.IsCompleted);
+            start.SetResult(true);
+            TlsCaMdnsApplyResult result = await apply.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.IsTrue(result.IdentityAvailable);
+            Assert.IsEmpty(result.StartFailures);
+            Assert.IsTrue(harness.Mdns.For(s_scopeA).Count(advertisement => advertisement.Started) == 2);
+        }
+        finally
+        {
+            _ = start.TrySetResult(true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyScopes_CancelledDuringGoodbyeKeepsRemovedScopeWithdrawn()
+    {
+        await using Harness harness = await Harness.Start(options => options.MdnsScopes = [s_scopeA]);
+        FakeAdvertisement[] old = [.. await harness.WaitForStarted(2)];
+        TaskCompletionSource<bool> goodbye = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        old[0].DisposeGate = goodbye;
+        using CancellationTokenSource cancel = new();
+        bool callbackRan = false;
+        try
+        {
+            Task<TlsCaMdnsApplyResult> apply = harness.Service.ApplyScopesAsync([s_scopeB], _ =>
+            {
+                callbackRan = true;
+                return Task.CompletedTask;
+            }, cancel.Token);
+            await harness.WaitUntil(() => old[0].DisposeRequested, "old scope goodbye to begin");
+            cancel.Cancel();
+            goodbye.SetResult(true);
+            _ = await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => apply);
+            await harness.WaitChecks(3);
+            Assert.IsFalse(callbackRan);
+            Assert.IsTrue(old.All(advertisement => advertisement.Disposed));
+            Assert.IsEmpty(harness.Mdns.For(s_scopeB));
+            Assert.IsEmpty(harness.Options.MdnsScopes!);
+        }
+        finally
+        {
+            _ = goodbye.TrySetResult(true);
+        }
+    }
+
+    [TestMethod]
     public async Task ReplacingTheList_StartsAddedScopes_WithdrawsRemovedOnes_AndLeavesTheRestRunning()
     {
         await using Harness harness = await Harness.Start(options => options.MdnsScopes = [s_scopeA, s_scopeB]);
@@ -518,9 +814,11 @@ public sealed class MdnsScopeTests
 
         public TlsCaStatus Status { get; }
 
+        public TlsCaMdnsService Service => _service;
+
         public string Name => Manager.Current.Name;
 
-        public static async Task<Harness> Start(Action<TlsCaOptions>? configure = null, Func<string>? hostName = null, string? explicitName = null, bool realMdns = false, Action<FakeMdns>? configureMdns = null)
+        public static async Task<Harness> Start(Action<TlsCaOptions>? configure = null, Func<string>? hostName = null, string? explicitName = null, bool realMdns = false, Action<FakeMdns>? configureMdns = null, bool loadIdentity = true, bool startService = true)
         {
             TempDirectory directory = new();
             TestLogProvider logs = new();
@@ -531,15 +829,25 @@ public sealed class MdnsScopeTests
                 // These tests never perform a TLS handshake; keep mDNS behavior independent of the Windows profile key container.
                 o.ServerCertificateFactoryOverride = static (leaf, key) => leaf.CopyWithPrivateKey(key);
             });
-            _ = await manager.LoadOrCreate();
+            if (loadIdentity)
+            {
+                _ = await manager.LoadOrCreate();
+            }
             TlsCaOptions options = TestManagers.Options(o => (o.HttpPort, o.HttpsPort) = (9090, 9190));
             configure?.Invoke(options);
             TlsCaStatus status = new(manager, options, loggers.CreateLogger<TlsCaStatus>());
             Harness harness = new(directory, loggers, logs, manager, options, status, realMdns);
             configureMdns?.Invoke(harness.Mdns);
-            await harness._service.StartAsync(CancellationToken.None);
+            if (startService)
+            {
+                await harness._service.StartAsync(CancellationToken.None);
+            }
             return harness;
         }
+
+        public Task StartService() => _service.StartAsync(CancellationToken.None);
+
+        public Task StopService() => _service.StopAsync(CancellationToken.None);
 
         public async Task<IReadOnlyList<FakeAdvertisement>> WaitForStarted(int count)
         {
@@ -581,7 +889,9 @@ public sealed class MdnsScopeTests
         private readonly Lock _lock = new();
         private readonly List<FakeAdvertisement> _created = [];
         private readonly Dictionary<string, string?> _startFailures = [];
+        private readonly Dictionary<(string Interface, string Service), string?> _serviceStartFailures = [];
         private readonly Dictionary<string, int> _startAttempts = [];
+        private readonly Dictionary<string, TaskCompletionSource<bool>> _startGates = [];
 
         public bool CreatedWhileSameAdapterActive { get; private set; }
 
@@ -609,6 +919,14 @@ public sealed class MdnsScopeTests
             }
         }
 
+        public void FailStartService(TlsCaMdnsScope scope, string serviceType, string? failure)
+        {
+            lock (_lock)
+            {
+                _serviceStartFailures[(scope.NetworkInterfaceId, serviceType)] = failure;
+            }
+        }
+
         public int StartAttempts(TlsCaMdnsScope scope)
         {
             lock (_lock)
@@ -617,9 +935,17 @@ public sealed class MdnsScopeTests
             }
         }
 
+        public void StartGate(TlsCaMdnsScope scope, TaskCompletionSource<bool> gate)
+        {
+            lock (_lock)
+            {
+                _startGates[scope.NetworkInterfaceId] = gate;
+            }
+        }
+
         public FakeAdvertisement Create(InstanceProperties properties, AdvertisedServiceOptions options, ILogger _)
         {
-            FakeAdvertisement advertisement = new(properties, options, StartFailure);
+            FakeAdvertisement advertisement = new(properties, options, StartFailure, StartGateFor);
             lock (_lock)
             {
                 CreatedWhileSameAdapterActive |= _created.Any(previous =>
@@ -641,12 +967,21 @@ public sealed class MdnsScopeTests
                     _startAttempts[key] = _startAttempts.GetValueOrDefault(key) + 1;
                 }
 
-                return _startFailures.GetValueOrDefault(key);
+                return _serviceStartFailures.GetValueOrDefault((key, advertisement.Properties.ServiceType))
+                    ?? _startFailures.GetValueOrDefault(key);
+            }
+        }
+
+        private TaskCompletionSource<bool>? StartGateFor(FakeAdvertisement advertisement)
+        {
+            lock (_lock)
+            {
+                return _startGates.GetValueOrDefault(advertisement.Options.NetworkInterfaceId ?? "");
             }
         }
     }
 
-    private sealed class FakeAdvertisement(InstanceProperties properties, AdvertisedServiceOptions options, Func<FakeAdvertisement, string?> startFailure) : IMdnsAdvertisement
+    private sealed class FakeAdvertisement(InstanceProperties properties, AdvertisedServiceOptions options, Func<FakeAdvertisement, string?> startFailure, Func<FakeAdvertisement, TaskCompletionSource<bool>?> startGate) : IMdnsAdvertisement
     {
         private volatile bool _started;
         private volatile bool _disposed;
@@ -670,8 +1005,13 @@ public sealed class MdnsScopeTests
             set => Volatile.Write(ref field, value);
         }
 
-        public Task Start(CancellationToken cancellationToken)
+        public async Task Start(CancellationToken cancellationToken)
         {
+            if (startGate(this) is { } gate)
+            {
+                _ = await gate.Task.WaitAsync(cancellationToken);
+            }
+
             if (startFailure(this) is { } failure)
             {
                 Failure = failure;
@@ -679,7 +1019,6 @@ public sealed class MdnsScopeTests
             }
 
             _started = true;
-            return Task.CompletedTask;
         }
 
         public async ValueTask DisposeAsync()

@@ -161,6 +161,10 @@ public sealed class TlsCaOptions
     /// only. With the default library-owned listener, HTTPS still accepts connections on every interface; when
     /// <see cref="AppOwnsListeners"/> is true, the application chooses its listening addresses independently.
     /// </para>
+    /// <para>
+    /// To await withdrawals and replacement startup, use <see cref="ITlsCaMdns.ApplyScopesAsync(IReadOnlyList{TlsCaMdnsScope}, CancellationToken)"/>.
+    /// Its callback overload coordinates application-owned advertisements that share this library's host name.
+    /// </para>
     /// </summary>
     /// <exception cref="ArgumentException">The list holds a null element.</exception>
     public IReadOnlyList<TlsCaMdnsScope>? MdnsScopes

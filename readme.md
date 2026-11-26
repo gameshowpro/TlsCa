@@ -178,6 +178,35 @@ In `BuiltInCa`, the two calls register the `TlsIdentityManager` as a singleton (
 - Use one scope per interface, and give every publication that shares a host name on that adapter the same complete address set. Registrations for differing address sets on one adapter cannot coexist for that name. Before replacing an address set, withdraw the affected advertisement handles across all services; handles left running for an unchanged complete set remain valid, and a retained conflicted handle clears its conflict automatically after the competing record disappears and the conflict retry succeeds.
 - Scopes control mDNS publication addresses; they do not restrict listener bindings. By default the library's listeners retain their existing behavior. Set `AppOwnsListeners` and bind the app's own Kestrel endpoints to the intended addresses when the app must limit which interfaces accept connections; no wildcard listener is added by the library in that mode.
 
+**Awaiting scope changes with app-owned advertisements.** `ITlsCaMdns` is registered in every mode. Its `ApplyScopesAsync` methods await reconciliation; use the callback overload when the app also advertises the same host name and must change its publications with the library's. This is one serialized transition: the library withdraws affected advertisements and awaits their goodbyes, invokes the callback under the reconciliation gate, then starts new or changed library advertisements and awaits each first start attempt. The callback should dispose the app's affected publication handles, then start replacements with the same complete address sets as the target scopes. Leave unchanged handles running. Use one callback for the two halves; a separate stop/change/start sequence can race another scope update.
+
+```csharp
+async Task ApplyNetworkScopesAsync(
+    IReadOnlyList<TlsCaMdnsScope>? scopes,
+    CancellationToken cancellationToken)
+{
+    ITlsCaMdns mdns = app.Services.GetRequiredService<ITlsCaMdns>();
+    TlsCaMdnsScope[]? target = scopes?.ToArray(); // one snapshot for both publishers
+
+    async Task ReconcileOwnPublications(CancellationToken token)
+    {
+        await DisposeAffectedOwnPublicationsAsync(target, token);
+        await StartOwnPublicationsAsync(target, token); // only for endpoints already bound by the app
+    }
+
+    TlsCaMdnsApplyResult result = await mdns.ApplyScopesAsync(
+        target, ReconcileOwnPublications, cancellationToken);
+    if (!result.AdvertisingEnabled)
+    {
+        // In non-BuiltInCa mode or with AdvertiseMdns=false, the library stores scopes
+        // and returns without calling the callback; perform the app transition here.
+        await ReconcileOwnPublications(cancellationToken);
+    }
+}
+```
+
+The callback also runs in active mode when no TLS identity is available; in that case `IdentityAvailable` is false and the library starts no advertisements. If `AdvertisingEnabled` is false, the callback did not run and the app must perform its own transition. In active mode the service must be running before calling `ApplyScopesAsync`; calls made before startup or after shutdown throw. Start failures are returned in `StartFailures` (`Scope`, `Message`, `IsNameConflict`) and are retried in the background; they do not throw. A queued cancellation leaves scopes unchanged and completes when that request reaches the head of the queue. A callback exception or cancellation before the callback completes leaves removed scopes withdrawn, starts no new library advertisements, and retains only unchanged scopes in the options. Once the callback succeeds, the target is committed: cancellation while awaiting startup stops the wait without rolling back starts or background retries. Apply another set to change that target. Cooperate with the callback cancellation token. Do not call `ApplyScopesAsync` recursively or wait inside the callback for another queued apply, because the callback holds the serialization gate. Serialize consumer transitions through this callback overload; when library advertising is disabled, retain app-level serialization around the fallback transition. Avoid independent `MdnsScopes` setter writes during a shared host transition. Pass `null` for one unscoped advertisement; pass an empty list for no scopes.
+
 **Apps that already use GameshowPro.Mdns.** Nothing needs passing in, and there is no overload that takes an existing Mdns object. Mdns has one runtime per process that owns the sockets; `AdvertisedService`, `ServiceFinder` and `ConflictMonitor` are handles that register with it, so the library's advertisements run next to the app's own.
 
 - Discovery and single-instance checks are not affected. The library advertises only `_https._tcp` and `_http._tcp`, with the device name as the instance name, so a `ConflictMonitor` or `ServiceFinder` for the app's own service type never sees them. A finder that browses `_http._tcp` or `_https._tcp` sees the library's entry only when its search profile allows this machine (`AllowLocalhost`).

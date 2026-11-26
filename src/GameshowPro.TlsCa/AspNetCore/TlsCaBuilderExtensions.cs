@@ -128,7 +128,9 @@ public static partial class TlsCaBuilderExtensions
                     _ = services.AddHostedService<TlsCaRenewalService>();
                     if (options.AdvertiseMdns)
                     {
-                        _ = services.AddHostedService<TlsCaMdnsService>();
+                        _ = services.AddSingleton<TlsCaMdnsService>();
+                        _ = services.AddSingleton<ITlsCaMdns>(static provider => provider.GetRequiredService<TlsCaMdnsService>());
+                        _ = services.AddSingleton<IHostedService>(static provider => provider.GetRequiredService<TlsCaMdnsService>());
                     }
 
                     break;
@@ -153,6 +155,11 @@ public static partial class TlsCaBuilderExtensions
                 default:
                     _ = services.AddHostedService<TlsCaModeLog>();
                     break;
+            }
+
+            if (mode != TlsCaMode.BuiltInCa || !options.AdvertiseMdns)
+            {
+                _ = services.AddSingleton<ITlsCaMdns>(new InactiveTlsCaMdns(options));
             }
 
             static TlsIdentityManager CreateManager(IServiceProvider provider)

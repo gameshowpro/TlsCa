@@ -127,6 +127,51 @@ public sealed class ConfigurationTests
     // Mode resolution and AddGameshowProTlsCa
 
     [TestMethod]
+    [DataRow("disabled")]
+    [DataRow("off")]
+    [DataRow("own")]
+    [DataRow("kestrel")]
+    public async Task Add_InactiveMdnsFacadeStoresScopesWithoutCallingTheCallback(string scenario)
+    {
+        using TempDirectory directory = new();
+        WebApplicationBuilder builder = scenario switch
+        {
+            "own" => Builder(("TriggerGate:CertificatePath", "server.pfx")),
+            "kestrel" => Builder(("Kestrel:Certificates:Default:Path", "server.pfx")),
+            _ => Builder(),
+        };
+        TlsCaOptions? options = null;
+        _ = builder.AddGameshowProTlsCa(value =>
+        {
+            Configure(value, directory.Path);
+            value.ConfigurationSection = scenario is "off" ? null : "TriggerGate";
+            if (scenario == "off")
+            {
+                value.HttpsPort = 0;
+            }
+            options = value;
+        });
+        await using WebApplication app = builder.Build();
+        ITlsCaMdns mdns = app.Services.GetRequiredService<ITlsCaMdns>();
+        Assert.AreSame(mdns, app.Services.GetRequiredService<ITlsCaMdns>());
+        bool callbackRan = false;
+        TlsCaMdnsScope scope = new("nic", IPAddress.Parse("192.0.2.11"));
+        List<TlsCaMdnsScope> caller = [scope];
+        TlsCaMdnsApplyResult result = await mdns.ApplyScopesAsync(caller, _ =>
+        {
+            callbackRan = true;
+            return Task.CompletedTask;
+        });
+        caller.Clear();
+
+        Assert.IsFalse(callbackRan);
+        Assert.IsFalse(result.AdvertisingEnabled);
+        Assert.IsEmpty(result.StartedScopes);
+        Assert.IsEmpty(result.StartFailures);
+        CollectionAssert.AreEqual(new[] { scope }, options!.MdnsScopes!.ToArray());
+    }
+
+    [TestMethod]
     [DataRow("Kestrel:Certificates:Default:Path", "server.pfx", "Kestrel:Certificates:Default:Path")]
     [DataRow("Kestrel:Endpoints:Https:Url", "https://*:9443", "Kestrel:Endpoints:Https:Url")]
     public async Task Add_KestrelCertificate_IsKestrelMode_RegistersTheStatus_AndTouchesNoStorage(string key, string value, string setting)

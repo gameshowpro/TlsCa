@@ -11,7 +11,7 @@ namespace GameshowPro.TlsCa.AspNetCore;
 /// <see cref="CheckInterval"/>; scopes that leave it are withdrawn, new ones are started, and the rest keep running.
 /// </para>
 /// </summary>
-internal sealed partial class TlsCaMdnsService(TlsIdentityManager manager, TlsCaOptions options, TlsCaStatus status, TimeProvider timeProvider, ILogger<TlsCaMdnsService> logger) : BackgroundService
+internal sealed partial class TlsCaMdnsService(TlsIdentityManager manager, TlsCaOptions options, TlsCaStatus status, TimeProvider timeProvider, ILogger<TlsCaMdnsService> logger) : BackgroundService, ITlsCaMdns
 {
     public static readonly TimeSpan CheckInterval = TimeSpan.FromSeconds(2);
     public static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(30);
@@ -19,198 +19,367 @@ internal sealed partial class TlsCaMdnsService(TlsIdentityManager manager, TlsCa
     // These are how GameshowPro.Mdns words a name conflict in AdvertisedService.Failure (it has no typed flag).
     private static readonly ImmutableArray<string> s_conflictFailures = ["Another mDNS responder owns", "already owned by another"];
 
+    private readonly Dictionary<ScopeKey, ScopeRun> _runs = [];
+    private readonly object _queueLock = new();
+    private Task _queueTail = Task.CompletedTask;
+    private string? _name;
+    private bool? _wasEmpty;
+    private bool _waitLogged;
+    private CancellationToken _stoppingToken;
+    private volatile bool _running;
+    private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _disposed;
+
+    public Task<TlsCaMdnsApplyResult> ApplyScopesAsync(IReadOnlyList<TlsCaMdnsScope>? scopes, CancellationToken cancellationToken = default) =>
+        ApplyScopesCore(scopes, null, cancellationToken);
+
+    public Task<TlsCaMdnsApplyResult> ApplyScopesAsync(IReadOnlyList<TlsCaMdnsScope>? scopes, Func<CancellationToken, Task> afterWithdraw, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(afterWithdraw);
+        return ApplyScopesCore(scopes, afterWithdraw, cancellationToken);
+    }
+
+    private Task<TlsCaMdnsApplyResult> ApplyScopesCore(IReadOnlyList<TlsCaMdnsScope>? scopes, Func<CancellationToken, Task>? afterWithdraw, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!_running)
+        {
+            throw new InvalidOperationException("The mDNS host service must be running before scopes can be applied asynchronously. Set TlsCaOptions.MdnsScopes before host startup.");
+        }
+
+        IReadOnlyList<TlsCaMdnsScope>? snapshot = CopyScopes(scopes);
+        return Serialized(async () =>
+        {
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stoppingToken);
+            CancellationToken operationToken = linked.Token;
+            operationToken.ThrowIfCancellationRequested();
+            if (!_running)
+            {
+                throw new InvalidOperationException("The mDNS host service has stopped.");
+            }
+
+            await RefreshIdentity().ConfigureAwait(false);
+            HashSet<ScopeKey> desired = Desired(snapshot);
+            ScopeKey[] unchanged = [.. _runs.Keys.Where(desired.Contains)];
+            ScopeRun[] removed = [.. _runs.Values.Where(run => !desired.Contains(run.Key))];
+            foreach (ScopeRun run in removed)
+            {
+                _ = _runs.Remove(run.Key);
+                LogScopeWithdrawn(_name!, run.Description);
+            }
+
+            // Publish the safe intersection before any awaited goodbye. A failure cannot make polling restore an
+            // advertisement that the consumer is in the process of replacing.
+            options.MdnsScopes = RetainedScopes(unchanged);
+            await Withdraw(removed).ConfigureAwait(false);
+            try
+            {
+                operationToken.ThrowIfCancellationRequested();
+                if (afterWithdraw is not null)
+                {
+                    await afterWithdraw(operationToken).ConfigureAwait(false);
+                }
+
+                operationToken.ThrowIfCancellationRequested();
+            }
+            catch
+            {
+                // A failed consumer transition must not be replayed by the poll loop. Keep only the scopes still live.
+                options.MdnsScopes = RetainedScopes(unchanged);
+                UpdateConflict();
+                throw;
+            }
+
+            options.MdnsScopes = snapshot;
+            if (_name is null)
+            {
+                UpdateConflict();
+                return new TlsCaMdnsApplyResult(true, false, [], [], []);
+            }
+
+            ScopeRun[] started = StartMissing(desired, _stoppingToken);
+            await Task.WhenAll(_runs.Values.Where(run => desired.Contains(run.Key)).Select(static run => run.FirstStart.Task)).WaitAsync(operationToken).ConfigureAwait(false);
+            UpdateConflict();
+            List<TlsCaMdnsStartFailure> failures = [];
+            foreach (ScopeRun run in _runs.Values.Where(run => desired.Contains(run.Key)))
+            {
+                string? message = started.Contains(run) ? run.FirstFailure : run.LastFailure;
+                if (message is not null)
+                {
+                    failures.Add(new TlsCaMdnsStartFailure(run.Key.Scope, message, IsConflict(message)));
+                }
+            }
+
+            return new TlsCaMdnsApplyResult(
+                true,
+                true,
+                [.. started.Where(static run => run.FirstFailure is null).Select(static run => run.Key.Scope)],
+                [.. unchanged.Select(static key => key.Scope)],
+                failures);
+        }, cancellationToken);
+    }
+
+    private static IReadOnlyList<TlsCaMdnsScope>? CopyScopes(IReadOnlyList<TlsCaMdnsScope>? scopes)
+    {
+        if (scopes is null)
+        {
+            return null;
+        }
+
+        if (scopes.Any(static scope => scope is null))
+        {
+            throw new ArgumentException("MdnsScopes cannot hold a null element.", nameof(scopes));
+        }
+        return [.. scopes];
+    }
+
+    private static HashSet<ScopeKey> Desired(IReadOnlyList<TlsCaMdnsScope>? scopes) =>
+        scopes is null ? [new ScopeKey(null)] : [.. scopes.Select(static scope => new ScopeKey(scope))];
+
+    private static IReadOnlyList<TlsCaMdnsScope>? RetainedScopes(ScopeKey[] unchanged) =>
+        unchanged.Any(static key => key.Scope is null) ? null : [.. unchanged.Select(static key => key.Scope!)];
+
+    // Queue links are assigned synchronously at invocation, so competing callers have FIFO order.
+    private Task<T> Serialized<T>(Func<Task<T>> action, CancellationToken cancellationToken)
+    {
+        Task predecessor;
+        TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_queueLock)
+        {
+            predecessor = _queueTail;
+            _queueTail = completion.Task;
+        }
+
+        return Execute();
+        async Task<T> Execute()
+        {
+            try
+            {
+                await predecessor.ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                return await action().ConfigureAwait(false);
+            }
+            finally
+            {
+                _ = completion.TrySetResult();
+            }
+        }
+    }
+
+    private Task<bool> Serialized(Func<Task> action, CancellationToken cancellationToken) =>
+        Serialized(async () => { await action().ConfigureAwait(false); return true; }, cancellationToken);
+
     /// <summary>Test seam: creates each advertised service. The default creates a GameshowPro.Mdns <see cref="AdvertisedService"/>.</summary>
     internal Func<InstanceProperties, AdvertisedServiceOptions, ILogger, IMdnsAdvertisement> CreateAdvertisement { get; init; } =
         static (properties, serviceOptions, serviceLogger) => new MdnsAdvertisement(new AdvertisedService(properties, serviceOptions, serviceLogger));
 
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+        await _ready.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public override void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        {
+            base.Dispose();
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _stoppingToken = stoppingToken;
+        _running = true;
+        _ = _ready.TrySetResult();
         try
         {
-            bool waitLogged = false;
-            while (!stoppingToken.IsCancellationRequested)
+            using PeriodicTimer timer = new(CheckInterval, timeProvider);
+            do
             {
-                if (manager.CurrentOrDefault is not { } identity)
+                _ = await Serialized(async () =>
                 {
-                    if (!waitLogged)
+                    await RefreshIdentity().ConfigureAwait(false);
+                    if (_name is not null)
                     {
-                        LogWaitingForIdentity();
-                        waitLogged = true;
+                        HashSet<ScopeKey> desired = Desired(options.MdnsScopes);
+                        if (desired.Count == 0 && _wasEmpty is not true)
+                        {
+                            LogNoScopes();
+                        }
+                        _wasEmpty = desired.Count == 0;
+                        await Reconcile(desired, stoppingToken).ConfigureAwait(false);
                     }
 
-                    await Task.Delay(CheckInterval, timeProvider, stoppingToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                waitLogged = false;
-                await Advertise(identity.Name, stoppingToken).ConfigureAwait(false);
+                    UpdateConflict();
+                }, stoppingToken).ConfigureAwait(false);
             }
+            while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
         }
         finally
         {
+            _running = false;
+            _ = await Serialized(async () =>
+            {
+                await Withdraw([.. _runs.Values]).ConfigureAwait(false);
+                _runs.Clear();
+                status.NameConflict = false;
+            }, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task RefreshIdentity()
+    {
+        string? current = manager.CurrentOrDefault?.Name;
+        if (current is null && !_waitLogged)
+        {
+            LogWaitingForIdentity();
+            _waitLogged = true;
+        }
+        else if (current is not null)
+        {
+            _waitLogged = false;
+        }
+
+        if (current == _name)
+        {
+            return;
+        }
+        if (_name is not null)
+        {
+            if (current is not null)
+            {
+                LogRenamed(_name, current);
+            }
+            await Withdraw([.. _runs.Values]).ConfigureAwait(false);
+            _runs.Clear();
             status.NameConflict = false;
         }
+        _name = current;
+    }
 
-        // Advertises the name on the scopes in TlsCaOptions.MdnsScopes, following changes to the
-        // list, until the name changes (returns) or the service stops (throws). Every scope is withdrawn before it returns.
-        async Task Advertise(string name, CancellationToken stoppingToken)
+    private async Task Reconcile(HashSet<ScopeKey> desired, CancellationToken stoppingToken)
+    {
+        ScopeRun[] removed = [.. _runs.Values.Where(run => !desired.Contains(run.Key))];
+        foreach (ScopeRun run in removed)
         {
-            Dictionary<ScopeKey, ScopeRun> runs = [];
-            bool? wasEmpty = null;
-            try
+            _ = _runs.Remove(run.Key);
+            LogScopeWithdrawn(_name!, run.Description);
+        }
+
+        await Withdraw(removed).ConfigureAwait(false);
+        _ = StartMissing(desired, stoppingToken);
+    }
+
+    private ScopeRun[] StartMissing(HashSet<ScopeKey> desired, CancellationToken stoppingToken)
+    {
+        List<ScopeRun> added = [];
+        foreach (ScopeKey key in desired.Where(key => !_runs.ContainsKey(key)))
+        {
+            ScopeRun run = new(key, CancellationTokenSource.CreateLinkedTokenSource(stoppingToken));
+            _runs.Add(key, run);
+            run.Task = RunScope(_name!, run);
+            added.Add(run);
+        }
+
+        return [.. added];
+    }
+
+    private async Task RunScope(string name, ScopeRun run)
+    {
+        await Task.Yield();
+        CancellationToken token = run.Stop.Token;
+        string scope = run.Description;
+        try
+        {
+            while (true)
             {
-                using PeriodicTimer timer = new(CheckInterval, timeProvider);
-                do
+                ImmutableList<IMdnsAdvertisement> services = [];
+                try
                 {
-                    string? current = manager.CurrentOrDefault?.Name;
-                    if (current != name)
-                    {
-                        if (current is not null)
-                        {
-                            LogRenamed(name, current);
-                        }
-
-                        return;
-                    }
-
-                    IReadOnlyList<TlsCaMdnsScope>? scopes = options.MdnsScopes;
-                    HashSet<ScopeKey> desired = scopes is null ? [new ScopeKey(null)] : [.. scopes.Select(scope => new ScopeKey(scope))];
-                    if (desired.Count == 0 && wasEmpty is not true)
-                    {
-                        LogNoScopes();
-                    }
-
-                    wasEmpty = desired.Count == 0;
-                    await Reconcile(name, runs, desired, stoppingToken).ConfigureAwait(false);
-                    UpdateConflict(name, runs.Values);
-                }
-                while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
-            }
-            finally
-            {
-                await Withdraw([.. runs.Values]).ConfigureAwait(false);
-                runs.Clear();
-                status.NameConflict = false;
-            }
-
-            // Withdraws the scopes that are no longer wanted (waiting for their goodbyes), then starts the new ones.
-            async Task Reconcile(string name, Dictionary<ScopeKey, ScopeRun> runs, HashSet<ScopeKey> desired, CancellationToken stoppingToken)
-            {
-                ScopeRun[] removed = [.. runs.Values.Where(run => !desired.Contains(run.Key))];
-                foreach (ScopeRun run in removed)
-                {
-                    _ = runs.Remove(run.Key);
-                    LogScopeWithdrawn(name, run.Description);
-                }
-
-                // A scope withdrawn and added again must not meet its own previous registration, which Mdns would treat as a
-                // local conflict.
-                await Withdraw(removed).ConfigureAwait(false);
-
-                foreach (ScopeKey key in desired.Where(key => !runs.ContainsKey(key)))
-                {
-                    ScopeRun run = new(key, CancellationTokenSource.CreateLinkedTokenSource(stoppingToken));
-                    runs.Add(key, run);
-                    run.Task = RunScope(name, run);
-                }
-
-                // One scope's advertisement: started, retried after a failure, and withdrawn when its token is cancelled.
-                async Task RunScope(string name, ScopeRun run)
-                {
-                    // Leave the caller (the reconcile loop) at once: starting includes several hundred milliseconds of probing.
-                    await Task.Yield();
-                    CancellationToken token = run.Stop.Token;
-                    string scope = run.Description;
                     try
                     {
-                        while (true)
+                        services = services.Add(Create(name, run.Key.Scope, new InstanceProperties("_https", "tcp", checked((ushort)options.HttpsPort)), "/"));
+                        if (options.HttpPort > 0)
                         {
-                            ImmutableList<IMdnsAdvertisement> services = [];
-                            try
-                            {
-                                try
-                                {
-                                    services = services.Add(Create(name, run.Key.Scope, new InstanceProperties("_https", "tcp", checked((ushort)options.HttpsPort)), "/"));
-                                    if (options.HttpPort > 0)
-                                    {
-                                        services = services.Add(Create(name, run.Key.Scope, new InstanceProperties("_http", "tcp", checked((ushort)options.HttpPort)), TlsCaPaths.WellKnownPrefix + "/"));
-                                    }
+                            services = services.Add(Create(name, run.Key.Scope, new InstanceProperties("_http", "tcp", checked((ushort)options.HttpPort)), TlsCaPaths.WellKnownPrefix + "/"));
+                        }
 
-                                    foreach (IMdnsAdvertisement service in services)
-                                    {
-                                        await service.Start(token).ConfigureAwait(false);
-                                    }
-                                }
-#pragma warning disable CA1031 // mDNS trouble must not stop the web server or the other scopes: report it and retry.
-                                catch (Exception exception) when (exception is not OperationCanceledException || !token.IsCancellationRequested)
-#pragma warning restore CA1031
-                                {
-                                    bool conflict = IsConflict(exception.Message);
-                                    run.StartConflict = conflict;
-                                    LogAdvertisingFailed(scope, exception.Message, conflict);
-                                    await DisposeAll(services).ConfigureAwait(false);
-                                    services = [];
-                                    await Task.Delay(RetryInterval, timeProvider, token).ConfigureAwait(false);
-                                    continue;
-                                }
-
-                                run.StartConflict = false;
-                                run.Services = [.. services];
-                                LogAdvertising(name, scope);
-
-                                // Runs until withdrawn. A later failure (an interface that goes away and comes back) is Mdns's to
-                                // recover; a name conflict is read from Failure by UpdateConflict.
-                                await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
-                            }
-                            finally
-                            {
-                                run.Services = [];
-                                await DisposeAll(services).ConfigureAwait(false);
-                            }
+                        foreach (IMdnsAdvertisement service in services)
+                        {
+                            await service.Start(token).ConfigureAwait(false);
                         }
                     }
-                    catch (OperationCanceledException) when (token.IsCancellationRequested)
+#pragma warning disable CA1031 // mDNS trouble must not stop the web server or other scopes.
+                    catch (Exception exception) when (exception is not OperationCanceledException || !token.IsCancellationRequested)
+#pragma warning restore CA1031
                     {
+                        bool conflict = IsConflict(exception.Message);
+                        run.StartConflict = conflict;
+                        run.LastFailure = exception.Message;
+                        if (!run.FirstStart.Task.IsCompleted)
+                        {
+                            run.FirstFailure = exception.Message;
+                        }
+                        LogAdvertisingFailed(scope, exception.Message, conflict);
+                        await DisposeAll(services).ConfigureAwait(false);
+                        services = [];
+                        _ = run.FirstStart.TrySetResult();
+                        await Task.Delay(RetryInterval, timeProvider, token).ConfigureAwait(false);
+                        continue;
                     }
 
-                    IMdnsAdvertisement Create(string name, TlsCaMdnsScope? scope, InstanceProperties properties, string path) =>
-                        CreateAdvertisement(
-                            properties,
-                            new AdvertisedServiceOptions
-                            {
-                                // One instance name per app keeps two GameshowPro apps on a machine from colliding on _https._tcp.
-                                InstanceName = name,
-                                HostName = name,
-                                NetworkInterfaceId = scope?.NetworkInterfaceId,
-                                LocalAddresses = scope?.LocalAddresses,
-                                TxtProperties = new Dictionary<string, string> { ["path"] = path }.ToFrozenDictionary(),
-                            },
-                            logger);
+                    run.StartConflict = false;
+                    run.LastFailure = null;
+                    run.Services = [.. services];
+                    _ = run.FirstStart.TrySetResult();
+                    LogAdvertising(name, scope);
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
                 }
-            }
-
-            // Sets TlsCaStatus.NameConflict from every scope, and logs a scope's conflict when it appears.
-            void UpdateConflict(string name, IEnumerable<ScopeRun> runs)
-            {
-                bool any = false;
-                foreach (ScopeRun run in runs)
+                finally
                 {
-                    bool running = run.Services.Any(service => IsConflict(service.Failure));
-                    if (running && !run.ConflictLogged)
-                    {
-                        LogNameConflict(name, run.Description);
-                    }
-
-                    run.ConflictLogged = running;
-                    any |= running || run.StartConflict;
+                    run.Services = [];
+                    await DisposeAll(services).ConfigureAwait(false);
                 }
-
-                status.NameConflict = any;
             }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            _ = run.FirstStart.TrySetResult();
+        }
+    }
+
+    private IMdnsAdvertisement Create(string name, TlsCaMdnsScope? scope, InstanceProperties properties, string path) =>
+        CreateAdvertisement(
+            properties,
+            new AdvertisedServiceOptions
+            {
+                InstanceName = name,
+                HostName = name,
+                NetworkInterfaceId = scope?.NetworkInterfaceId,
+                LocalAddresses = scope?.LocalAddresses,
+                TxtProperties = new Dictionary<string, string> { ["path"] = path }.ToFrozenDictionary(),
+            },
+            logger);
+
+    private void UpdateConflict()
+    {
+        bool any = false;
+        foreach (ScopeRun run in _runs.Values)
+        {
+            bool running = run.Services.Any(service => IsConflict(service.Failure));
+            if (running && !run.ConflictLogged)
+            {
+                LogNameConflict(_name!, run.Description);
+            }
+            run.ConflictLogged = running;
+            any |= running || run.StartConflict;
+        }
+
+        status.NameConflict = any;
     }
 
     private static string Describe(TlsCaMdnsScope? scope) =>
@@ -270,6 +439,7 @@ internal sealed partial class TlsCaMdnsService(TlsIdentityManager manager, TlsCa
     {
         private volatile IMdnsAdvertisement[] _services = [];
         private volatile bool _startConflict;
+        private string? _lastFailure;
 
         public ScopeKey Key => key;
 
@@ -279,6 +449,16 @@ internal sealed partial class TlsCaMdnsService(TlsIdentityManager manager, TlsCa
         public CancellationTokenSource Stop => stop;
 
         public Task Task { get; set; } = Task.CompletedTask;
+
+        public TaskCompletionSource FirstStart { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string? FirstFailure { get; set; }
+
+        public string? LastFailure
+        {
+            get => Volatile.Read(ref _lastFailure);
+            set => Volatile.Write(ref _lastFailure, value);
+        }
 
         /// <summary>The services while they are advertising; empty while starting, waiting to retry or withdrawn.</summary>
         public IMdnsAdvertisement[] Services

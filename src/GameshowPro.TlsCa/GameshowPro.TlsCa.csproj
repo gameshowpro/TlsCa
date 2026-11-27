@@ -38,9 +38,10 @@
   </ItemGroup>
   <PropertyGroup>
     <!-- GameshowPro.Mdns: the published package by default; opt into the sibling checkout for development.
-         Version 1.1.2 is the first release with AdvertisedServiceOptions.HostName. -->
+         Version 1.1.4 is the first release with address-set scopes (AdvertisedServiceOptions.LocalAddresses) and
+         recognition of this host's own packets on a second adapter. -->
     <MdnsProjectPath>..\..\..\Mdns\src\GameshowPro.Mdns\GameshowPro.Mdns.csproj</MdnsProjectPath>
-    <MdnsPackageVersion>1.1.2</MdnsPackageVersion>
+    <MdnsPackageVersion>1.1.4</MdnsPackageVersion>
     <UseMdnsProject Condition="'$(UseMdnsProject)' == ''">false</UseMdnsProject>
   </PropertyGroup>
   <ItemGroup Condition="'$(UseMdnsProject)' == 'true'">

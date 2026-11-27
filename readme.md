@@ -296,7 +296,7 @@ dotnet test TlsCa.slnx -c Release
 dotnet pack src/GameshowPro.TlsCa/GameshowPro.TlsCa.csproj -c Release
 ```
 
-**The GameshowPro.Mdns reference.** The committed `MdnsPackageVersion` remains pinned to published version 1.1.2. This branch's address-set scope API requires the Mdns 1.1.3 prerelease package; build with `-p:MdnsPackageVersion=1.1.3-g88796a1a55` and the local package from the Mdns repository's `artifacts/local-packages` feed until the required version is published and the committed version is raised. For coordinated development only, pass `-p:UseMdnsProject=true` to use the sibling checkout. Packing is refused with that option so a local dependency cannot accidentally enter a release.
+**The GameshowPro.Mdns reference.** The committed `MdnsPackageVersion` names the published GameshowPro.Mdns release this library needs: 1.1.4 or later, for address-set scopes. For coordinated development only, pass `-p:UseMdnsProject=true` to use the sibling checkout. Packing is refused with that option so a local dependency cannot accidentally enter a release.
 
 **CI** (`.github/workflows/build.yaml`): pull requests, pushes to `main`, and manual runs validate Release tests on Windows and Ubuntu, render and build both user-guide examples, and inspect the NuGet package. The build uses the SDK pinned in `global.json`, C# 15, and warnings as errors. Successful runs on `main` publish to the GameShowPro package source, then create a version tag and GitHub release. Package restore uses the Actions variables `GSP_PACKAGE_USERNAME` and `NUGET_URL` and the secret `GSP_PACKAGE_PAT`; publishing uses the repository's `GITHUB_TOKEN` with package write permission.
 

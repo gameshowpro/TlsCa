@@ -2,11 +2,14 @@ const assert = require('assert');
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
-let source = fs.readFileSync(path.join(__dirname, '..', 'src', 'GameshowPro.TlsCa', 'wwwroot', 'management.html'), 'utf8').split('<script>')[1].split('</script>')[0];
+const pageHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'GameshowPro.TlsCa', 'wwwroot', 'management.html'), 'utf8');
+let source = pageHtml.split('<script>')[1].split('</script>')[0];
 source = source.replace('  fetch(P + "info.json", { cache: "no-store" })', '  globalThis.page = { safeReturnTo, secureDestination, sameHostHttpDestination, sameHostHttpsDestination, sameHostHttpsSetupDestination, render, renderUnavailable, probe };\n  fetch(P + "info.json", { cache: "no-store" })');
 const nodes = new Map();
 class Element {
   constructor(tag) { this.tagName = tag; this.children = []; this.hidden = true; this.style = {}; this.textContent = ''; this.listeners = {}; this.firstChild = null; }
+  set innerHTML(value) { this._innerHTML = value; this.textContent = String(value).replace(/<[^>]*>/g, ' '); }
+  get innerHTML() { return this._innerHTML || ''; }
   appendChild(child) { this.children.push(child); this.firstChild = this.children[0]; this.lastChild = child; return child; }
   removeChild(child) { this.children.splice(this.children.indexOf(child), 1); this.firstChild = this.children[0] || null; }
   insertBefore(child) { this.children.unshift(child); this.firstChild = child; }
@@ -479,6 +482,119 @@ vm.runInNewContext(source, context);
   // Having used the section once, a later probe on the same page does not forward either.
   await trusted(upload);
   assert.equal(replaced, null, 'the section was used earlier on this page');
+
+  // Connection probe guidance is diagnosis only. Drive its timeout explicitly so the
+  // warning and retry behavior do not depend on wall-clock timing.
+  const elementText = node => (node.textContent || '') + node.children.map(elementText).join(' ');
+  const pageText = id => elementText(nodes.get(id));
+  setPage('http:');
+  location.hostname = 'other.local'; location.origin = 'http://other.local:8080'; location.port = '8080';
+  const probeTimers = new Map();
+  let nextProbeTimer = 0;
+  context.setTimeout = (handler, delay) => { const id = ++nextProbeTimer; probeTimers.set(id, { handler, delay }); return id; };
+  context.clearTimeout = id => { probeTimers.delete(id); };
+  const defaultPortInfo = { ...withoutHttp, secureAddress: 'https://show.local/' };
+  context.fetch = (url, options) => new Promise((resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+  });
+  context.page.render(defaultPortInfo);
+  context.page.probe(defaultPortInfo);
+  assert.equal(nodes.get('setup-connection').hidden, false, 'setup transport guidance is visible');
+  assert.match(pageText('setup-connection'), /HTTP/i);
+  assert.doesNotMatch(pageText('setup-connection'), /HTTPS/i, 'setup guidance reports the page transport only');
+  const timeout = [...probeTimers.values()].find(timer => timer.delay === 5000);
+  assert.ok(timeout, 'probe has a five second timeout');
+  timeout.handler();
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  assert.match(pageText('probe'), /timed out/i);
+  assert.match(pageText('probe'), /443/, 'default HTTPS port is shown as the TCP port');
+  assert.equal(nodes.get('connection-help').hidden, false, 'failure reveals connection-help');
+  const helpMarkup = pageHtml.match(/<details id="connection-help"[\s\S]*?<\/details>/)[0];
+  assert.match(helpMarkup, /firewall/i);
+  assert.match(helpMarkup, /name/i);
+  assert.match(helpMarkup, /network/i);
+  assert.doesNotMatch(helpMarkup, /confirmed|definitely|must be/i);
+  assert.doesNotMatch(pageText('probe'), /install.*certificate/i, 'primary diagnosis does not recommend installing a certificate');
+
+  // The deadline also covers a stalled response body, after HTTPS headers arrived.
+  context.fetch = async (url, options) => ({ ok: true, json: () => new Promise((resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(new Error('body aborted')));
+  }) });
+  context.page.probe(info);
+  for (let i = 0; i < 4; i++) await Promise.resolve();
+  [...probeTimers.values()].find(timer => timer.delay === 5000).handler();
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  assert.match(pageText('probe'), /timed out/i, 'body timeout is not reported as malformed metadata');
+  assert.match(pageText('probe'), /9443/, 'configured non-default port is shown');
+
+  context.page.render(defaultPortInfo);
+  assert.equal(nodes.get('connection-help').hidden, true, 'fresh identity metadata clears old connection-help');
+  assert.equal(nodes.get('retry-probe').hidden, true, 'fresh identity metadata clears retry');
+
+  // Immediate fetch failures allow certificate and network possibilities without
+  // claiming which one happened; HTTP responses retain their status code.
+  context.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  context.page.probe(info);
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  assert.match(pageText('probe'), /certificate/i);
+  assert.match(pageText('probe'), /network/i);
+  assert.doesNotMatch(pageText('probe'), /certificate is invalid|certificate mismatch/i);
+  context.fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });
+  context.page.probe(info);
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  assert.match(pageText('probe'), /503/);
+
+  // A different certificate identity is a terminal result: do not offer either
+  // address fallback, even when both are configured.
+  context.fetch = async () => ({ ok: true, json: async () => ({ ...info, caFingerprintSha256: '11:22' }) });
+  context.page.render(info);
+  context.page.probe(info);
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  assert.match(pageText('probe'), /different certificate identity|another device/i);
+  assert.equal(nodes.get('http-fallback').hidden, true);
+  assert.equal(nodes.get('https-fallback').hidden, true);
+
+  context.fetch = async () => ({ ok: true, json: async () => ({ product: 'App' }) });
+  context.page.probe(info);
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  assert.match(pageText('probe'), /unexpected response/i);
+  assert.doesNotMatch(pageText('probe'), /timed out|another identity/i);
+
+  context.fetch = async () => ({ ok: true, json: async () => { throw new SyntaxError('invalid JSON'); } });
+  context.page.probe(info);
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  assert.match(pageText('probe'), /unexpected response/i, 'invalid JSON is distinguished from transport failure');
+
+  // Retry clears the previous diagnosis and fallback actions while the request
+  // is pending, then restores the normal successful connection flow.
+  let finishRetry;
+  context.fetch = () => new Promise(resolve => { finishRetry = resolve; });
+  const retry = nodes.get('retry-probe');
+  assert.equal(typeof retry.onclick, 'function');
+  assert.equal(retry.disabled, false);
+  retry.onclick({ preventDefault() {} });
+  assert.equal(retry.disabled, true, 'retry is disabled while its probe is pending');
+  assert.equal(nodes.get('connection-help').hidden, true, 'retry clears connection-help');
+  assert.equal(nodes.get('http-fallback').hidden, true, 'retry clears old fallback actions');
+  assert.equal(nodes.get('https-fallback').hidden, true);
+  finishRetry({ ok: true, json: async () => info });
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  assert.equal(retry.disabled, true, 'completed retry remains unavailable while hidden');
+  assert.equal(nodes.get('retry-probe').hidden, true, 'success clears retry');
+  assert.equal(nodes.get('connection-help').hidden, true);
+  assert.equal(nodes.get('http-fallback').hidden, true, 'success returns to canonical secure address');
+
+  // An older in-flight failure cannot replace the result of a newer successful probe.
+  let finishOld;
+  context.fetch = () => new Promise(resolve => { finishOld = resolve; });
+  context.page.probe(info);
+  for (let i = 0; i < 2; i++) await Promise.resolve();
+  context.fetch = async () => ({ ok: true, json: async () => info });
+  context.page.probe(info);
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  finishOld({ ok: false, status: 502, json: async () => ({}) });
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  assert.doesNotMatch(pageText('probe'), /502|timed out|another identity/i, 'stale completion is ignored');
 
   console.log('Page script: safe paths, QR, localhost address block, fallback gate/cookie, wrong-host trust probe, forward, own-certificate section, gate countdown, 403 reasons and forward suppression passed.');
 })().catch(error => { console.error(error); process.exitCode=1; });

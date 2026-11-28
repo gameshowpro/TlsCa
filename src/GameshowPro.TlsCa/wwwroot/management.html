@@ -46,7 +46,14 @@ input[type=file]{max-width:100%;font:inherit}
 <main>
 <h1 id="title">Certificate setup</h1>
 <p class="muted" id="subtitle">Loading&hellip;</p>
-<div id="probe" class="note" hidden></div>
+<p id="setup-connection" class="muted" hidden></p>
+<div id="probe" class="note" role="status" hidden></div>
+<button class="btn plain" id="retry-probe" type="button" hidden>Retry connection check</button>
+<details id="connection-help" hidden>
+<summary>Connection troubleshooting</summary>
+<p>Check that the secure host name resolves on this computer, that the device serves HTTPS on this network, and that its firewall allows the HTTPS TCP port shown above. A router, VPN, or isolated Wi-Fi network can also prevent access.</p>
+<p>If opening the secure address shows a certificate warning, compare the fingerprint and follow the certificate installation steps below. Installing a certificate does not open a blocked port. This browser check cannot identify which firewall or network rule caused a failure.</p>
+</details>
 <div id="warnings"></div>
 
 <section id="status" hidden>
@@ -164,6 +171,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
   var P = "/.well-known/gameshowpro/";
   var OWN_MAX = 12 * 1024;
   var info = null, gateKind = null, countdown = null;
+  var activeProbe = null, probeGeneration = 0;
   var gateEnd = null, gateTimer = null, forwardStop = null, forwardHeld = false;
   var httpsEscapeReady = false;
 
@@ -311,6 +319,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
   }
 
   function render(i) {
+    clearConnectionCheck();
     info = i;
     setGateCountdown(i);
     document.title = i.product + " certificate setup";
@@ -413,6 +422,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 
   // info.json answered 503: the device has no usable identity. j may be {} (a device that sends no JSON body).
   function renderUnavailable(j) {
+    clearConnectionCheck();
     info = null;
     var title = j.product ? j.product + " certificate setup" : "Certificate setup";
     document.title = title;
@@ -478,6 +488,17 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     var b = $("probe"); clear(b); b.className = "note " + cls; b.hidden = false; b.appendChild(el("span", text)); return b;
   }
 
+  function clearConnectionCheck() {
+    ++probeGeneration;
+    if (activeProbe) { activeProbe.abort(); activeProbe = null; }
+    clearInterval(countdown); countdown = null; forwardStop = null;
+    $("probe").hidden = true;
+    $("retry-probe").hidden = true;
+    $("retry-probe").disabled = true;
+    $("connection-help").hidden = true;
+    $("setup-connection").hidden = true;
+  }
+
   // The operator working in the certificate section of an HTTP page (or part way through a signing request, which can
   // only be finished over HTTP) must not be carried off to the secure page: that is the point of using HTTP there.
   function holdForward() {
@@ -487,6 +508,18 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 
   function probe(i) {
     var url = httpsUrl(i), destination = secureDestination(i);
+    var generation = ++probeGeneration;
+    if (activeProbe) { activeProbe.abort(); activeProbe = null; }
+    clearInterval(countdown); countdown = null; forwardStop = null;
+    var retry = $("retry-probe");
+    retry.hidden = true; retry.disabled = true;
+    retry.onclick = function () { probe(i); };
+    $("connection-help").hidden = true;
+    var setup = $("setup-connection");
+    setup.textContent = location.protocol === "https:"
+      ? "This setup page is reachable over HTTPS."
+      : "This setup page is reachable over HTTP. The secure address is checked separately.";
+    setup.hidden = false;
     $("http-fallback").hidden = true;
     $("https-fallback").hidden = true;
     $("http-to-https").hidden = true;
@@ -497,12 +530,33 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       showProbe("You are connected securely, so this browser trusts this device.", "ok");
       return;
     }
-    var ctl = new AbortController(), timer = setTimeout(function () { ctl.abort(); }, 5000);
+    var target = new URL(url), port = target.port || "443";
+    var address = target.hostname + " (TCP port " + port + ")";
+    showProbe("Checking this browser's HTTPS connection to " + address + "…", "");
+    var ctl = new AbortController(), timedOut = false, failure = null;
+    activeProbe = ctl;
+    var timer = setTimeout(function () { timedOut = true; ctl.abort(); }, 5000);
     fetch(url + P.slice(1) + "info.json", { cache: "no-store", mode: "cors", signal: ctl.signal })
-      .then(function (r) { if (!r.ok) { throw new Error(r.status); } return r.json(); })
+      .then(function (r) {
+        if (!r.ok) { failure = "The secure address answered with HTTP " + r.status + ". Check the device's HTTPS service."; throw new Error("http"); }
+        return r.json().catch(function (error) {
+          if (ctl.signal.aborted) { throw error; }
+          failure = "The secure address returned an unexpected response. Check that the address belongs to this device.";
+          throw new Error("response");
+        });
+      })
       .then(function (j) {
         clearTimeout(timer);
-        if (j.caFingerprintSha256 !== i.caFingerprintSha256) { throw new Error("fingerprint"); }
+        if (generation !== probeGeneration) { return; }
+        activeProbe = null;
+        if (!j || typeof j.caFingerprintSha256 !== "string" || !j.caFingerprintSha256 || !i.caFingerprintSha256) {
+          failure = "The secure address returned an unexpected response. Check that the address belongs to this device.";
+          throw new Error("response");
+        }
+        if (j.caFingerprintSha256 !== i.caFingerprintSha256) {
+          failure = "The secure address answered with a different certificate identity. It may belong to another device. Check the host name and compare fingerprints before continuing.";
+          throw new Error("fingerprint");
+        }
         $("install").hidden = true;
         if (isLoopback()) {
           showProbe("This browser already trusts this device. You are on the computer itself, so you stay on this page; Renew and Reset need it.", "ok");
@@ -532,9 +586,18 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         forwardStop = stop;
         cancel.addEventListener("click", function (e) { e.preventDefault(); stop(); });
       })
-      .catch(function () {
+      .catch(function (error) {
         clearTimeout(timer);
-        showProbe("This browser cannot reach or does not trust this device's secure address. If the name resolves, install its certificate below, then reload this page.", "warn");
+        if (generation !== probeGeneration) { return; }
+        activeProbe = null;
+        var message = failure || (timedOut
+          ? "The HTTPS connection check to " + address + " timed out after 5 seconds. Check name resolution, the network connection, and whether the device's firewall allows this port. The timeout alone does not establish the cause."
+          : "This browser could not verify the HTTPS connection to " + address + ". Possible causes include name resolution, a blocked port, certificate trust, or browser network restrictions. Check the connection guidance below; install the certificate only if the browser reports a certificate warning.");
+        showProbe(message, "warn");
+        retry.hidden = false; retry.disabled = false;
+        $("connection-help").hidden = false;
+        // Do not offer session escapes after evidence that this address serves a different identity or invalid data.
+        if (error.message === "fingerprint" || error.message === "response") { return; }
         $("http-fallback").hidden = isLoopback() || i.allowHttpFallback !== true || !sameHostHttpDestination(i);
         httpsEscapeReady = i.allowHttpsFallback === true && !!sameHostHttpsDestination(i);
         $("https-fallback").hidden = !httpsEscapeReady;

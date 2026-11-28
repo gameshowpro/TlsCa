@@ -282,6 +282,8 @@ The firmware refresh includes the localhost address/copy/QR block, the IP fallba
 
 Path-prefix exemptions remain deferred; apps can disable the relevant navigation redirect options meanwhile.
 
+The browser connection check has a five-second deadline and reports the target HTTPS TCP port. Timeouts suggest checking name resolution, network access and firewall rules; other failures keep certificate trust and browser restrictions among the possible causes. HTTP errors, unexpected metadata and a different certificate identity have separate messages. Retry reruns the check without reloading; a new check or refreshed identity cancels the previous result and forwarding countdown. Identity mismatches and unexpected metadata offer no session fallback. These are findings for the current browser, not server-wide health or a diagnosis of the firewall. The page reports its own HTTP/HTTPS transport separately and does not infer a working HTTPS listener from configuration.
+
 Run `node tests/management-page.test.cjs` for the dependency-free page behavior checks alongside the .NET tests.
 
 ## User documentation for apps

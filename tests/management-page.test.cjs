@@ -198,18 +198,18 @@ vm.runInNewContext(source, context);
   assert.equal(nodes.get('http-fallback').hidden,true);
   assert.equal(nodes.get('https-fallback').hidden,false);
   context.fetch = async () => ({ok:true,json:async()=>info});
-  let tick;
-  context.setInterval = handler => { tick=handler; return 1; };
+  let redirectTimers = 0;
+  context.setInterval = () => { redirectTimers++; return redirectTimers; };
   context.page.probe(info);
   for(let i=0;i<5;i++) await Promise.resolve();
   assert.equal(nodes.get('http-fallback').hidden,true);
-  assert.equal(nodes.get('https-fallback').hidden,true,'a successful probe continues to prefer the .local address');
+  assert.equal(nodes.get('https-fallback').hidden,true,'a successful probe clears the HTTPS exception action');
   assigned = null;
   nodes.get('continue-https').listeners.click({preventDefault(){}});
   assert.equal(assigned,null,'a successful probe cannot use the HTTPS bypass');
-  assert.equal(typeof tick,'function');
-  for(let i=0;i<5;i++) tick();
-  assert.equal(replaced,'https://show.local:9443/shows/1?view=live');
+  assert.equal(redirectTimers,0,'a successful probe starts no redirect countdown');
+  assert.equal(replaced,null,'a successful probe never redirects automatically');
+  assert.match(nodes.get('probe').children.map(child => child.textContent).join(' '), /HTTPS connection succeeded/i);
   // Your own certificate (ESP32 firmware only).
   const settle = async () => { for (let n = 0; n < 4; n++) await new Promise(resolve => setImmediate(resolve)); };
   const setPage = (protocol) => { location.protocol = protocol; location.hostname = 'show.local'; location.origin = protocol + '//show.local'; location.port = ''; };
@@ -449,44 +449,51 @@ vm.runInNewContext(source, context);
     assert.match(text('result'), /power-cycle the device first/, 'renew fallback ' + JSON.stringify(body));
   }
 
-  // The automatic forward from the HTTP page to HTTPS does not fire while the certificate section is in use.
-  const trusted = async (deviceInfo, use) => {
+  const elementText = node => (node.textContent || '') + node.children.map(elementText).join(' ');
+  const pageText = id => elementText(nodes.get(id));
+  // A successful browser fetch proves that HTTPS responded, but it does not prove
+  // that the user installed the CA: Firefox can have a per-site exception. Keep
+  // the install controls available and offer an explicit, safe link without redirecting.
+  const successfulConnectionCheck = async (hostname, deviceInfo) => {
     setPage('http:');
-    location.hostname = 'other.local'; location.origin = 'http://other.local'; location.port = '';
+    location.hostname = hostname; location.origin = 'http://' + hostname; location.port = '';
     replaced = null;
-    let tickers = [];
-    const cleared = new Set();
-    context.setInterval = handler => { tickers.push(handler); return tickers.length; };
-    context.clearInterval = id => { cleared.add(id); };
+    let timerCount = 0;
+    context.setInterval = () => { timerCount++; return timerCount; };
+    context.clearInterval = () => {};
     context.fetch = async () => ({ ok: true, json: async () => deviceInfo });
     context.page.render(deviceInfo);
     context.page.probe(deviceInfo);
-    for (let n = 0; n < 8; n++) await Promise.resolve();
-    if (use) { use(); }
-    for (let n = 0; n < 8; n++) { tickers.forEach((handler, index) => { if (!cleared.has(index + 1)) { handler(); } }); }
-    return tickers.length;
+    for (let n = 0; n < 12; n++) await Promise.resolve();
+    const message = pageText('probe');
+    const links = [];
+    const visit = node => { if (node.tagName === 'a') links.push(node); node.children.forEach(visit); };
+    visit(nodes.get('probe'));
+    assert.match(message, /HTTPS connection succeeded/i);
+    assert.match(message, /cannot verify.*(certificate|authority)|does not (prove|confirm).*install/i);
+    assert.doesNotMatch(message, /trusted|trusts this device/i);
+    assert.equal(nodes.get('install').hidden, false, 'the certificate download/install section stays visible');
+    assert.equal(replaced, null, 'a successful check never redirects automatically');
+    assert.equal(timerCount, 0, 'a successful check starts no redirect countdown');
+    if (hostname === 'localhost') { assert.equal(links.length, 0, 'localhost keeps the page on the install/download view'); }
+    else { assert.ok(links.some(link => link.href === 'https://show.local:9443/shows/1?view=live'), 'explicit secure link keeps the safe returnTo for ' + hostname + '; actual=' + JSON.stringify(links.map(link => link.href)) + '; children=' + JSON.stringify(nodes.get('probe').children.map(node => [node.tagName, node.textContent, node.href]))); }
   };
-  const upload = { ...info, gate: 'boot', certificateUpload: true, certificateSource: 'ca', certificateDnsNames: [], certificateRequestPending: false, gateSecondsRemaining: 250 };
-  await trusted(upload);
-  assert.equal(replaced, 'https://show.local:9443/shows/1?view=live', 'untouched: it still forwards after the countdown');
-  await trusted(upload, () => nodes.get('own-cert').listeners.focusin());
-  assert.equal(replaced, null, 'focus in the section: the page stays');
-  assert.match(nodes.get('probe').children.map(child => child.textContent).join(''), /This device is trusted\. Open the secure page/);
-  await trusted(upload, () => nodes.get('own-cert').listeners.pointerdown());
-  assert.equal(replaced, null, 'a click in the section: the page stays');
-  await trusted({ ...upload, certificateRequestPending: true });
-  assert.equal(replaced, null, 'a pending signing request: the page stays');
-  assert.match(nodes.get('probe').children.map(child => child.textContent).join(''), /Open the secure page/);
-  await trusted({ ...upload, certificateUpload: undefined });
-  assert.equal(replaced, 'https://show.local:9443/shows/1?view=live', 'a device without the capability is unchanged');
-  // Having used the section once, a later probe on the same page does not forward either.
-  await trusted(upload);
-  assert.equal(replaced, null, 'the section was used earlier on this page');
+  const upload = { ...info, gate: 'loopback', certificateUpload: true, certificateSource: 'ca', certificateDnsNames: [], certificateRequestPending: false };
+  await successfulConnectionCheck('other.local', upload);
+  await successfulConnectionCheck('localhost', upload);
+  // The canonical HTTPS page can use the same success message without a network fetch.
+  location.protocol = 'https:'; location.hostname = 'show.local'; location.origin = 'https://show.local:9443'; location.port = '9443';
+  replaced = null;
+  context.page.render(upload);
+  context.page.probe(upload);
+  assert.match(pageText('probe'), /HTTPS connection succeeded/i);
+  assert.doesNotMatch(pageText('probe'), /trusted|trusts this device/i);
+  assert.equal(nodes.get('install').hidden, false, 'canonical HTTPS keeps certificate download/install controls visible');
+  assert.equal(replaced, null, 'canonical HTTPS does not trigger navigation');
+  assert.ok(nodes.get('probe').children.some(node => node.tagName === 'a' && node.href === 'https://show.local:9443/shows/1?view=live'));
 
   // Connection probe guidance is diagnosis only. Drive its timeout explicitly so the
   // warning and retry behavior do not depend on wall-clock timing.
-  const elementText = node => (node.textContent || '') + node.children.map(elementText).join(' ');
-  const pageText = id => elementText(nodes.get(id));
   setPage('http:');
   location.hostname = 'other.local'; location.origin = 'http://other.local:8080'; location.port = '8080';
   const probeTimers = new Map();
@@ -596,5 +603,5 @@ vm.runInNewContext(source, context);
   for (let i = 0; i < 12; i++) await Promise.resolve();
   assert.doesNotMatch(pageText('probe'), /502|timed out|another identity/i, 'stale completion is ignored');
 
-  console.log('Page script: safe paths, QR, localhost address block, fallback gate/cookie, wrong-host trust probe, forward, own-certificate section, gate countdown, 403 reasons and forward suppression passed.');
+  console.log('Page script: safe paths, QR, localhost address block, fallback gate/cookie, connection checks, own-certificate section, gate countdown and 403 reasons passed.');
 })().catch(error => { console.error(error); process.exitCode=1; });

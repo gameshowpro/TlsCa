@@ -170,9 +170,9 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 (function () {
   var P = "/.well-known/gameshowpro/";
   var OWN_MAX = 12 * 1024;
-  var info = null, gateKind = null, countdown = null;
+  var info = null, gateKind = null;
   var activeProbe = null, probeGeneration = 0;
-  var gateEnd = null, gateTimer = null, forwardStop = null, forwardHeld = false;
+  var gateEnd = null, gateTimer = null;
   var httpsEscapeReady = false;
 
   function $(id) { return document.getElementById(id); }
@@ -491,7 +491,6 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
   function clearConnectionCheck() {
     ++probeGeneration;
     if (activeProbe) { activeProbe.abort(); activeProbe = null; }
-    clearInterval(countdown); countdown = null; forwardStop = null;
     $("probe").hidden = true;
     $("retry-probe").hidden = true;
     $("retry-probe").disabled = true;
@@ -499,18 +498,19 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     $("setup-connection").hidden = true;
   }
 
-  // The operator working in the certificate section of an HTTP page (or part way through a signing request, which can
-  // only be finished over HTTP) must not be carried off to the secure page: that is the point of using HTTP there.
-  function holdForward() {
-    forwardHeld = true;
-    if (forwardStop) { forwardStop(); }
+  // Fetch also succeeds after a browser certificate exception. It cannot establish that the CA is installed.
+  function showConnectionSuccess(destination) {
+    var b = showProbe("The HTTPS connection succeeded. This does not confirm that this device's certificate authority is installed; your browser may be using a certificate exception. Certificate downloads remain available below. ", "ok");
+    $("install").hidden = false;
+    if (!isLoopback()) {
+      var go = el("a", "Open the app over HTTPS"); go.href = destination; b.appendChild(go);
+    }
   }
 
   function probe(i) {
     var url = httpsUrl(i), destination = secureDestination(i);
     var generation = ++probeGeneration;
     if (activeProbe) { activeProbe.abort(); activeProbe = null; }
-    clearInterval(countdown); countdown = null; forwardStop = null;
     var retry = $("retry-probe");
     retry.hidden = true; retry.disabled = true;
     retry.onclick = function () { probe(i); };
@@ -527,7 +527,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     $("this-https-address").textContent = "";
     httpsEscapeReady = false;
     if (location.origin === new URL(url).origin) {
-      showProbe("You are connected securely, so this browser trusts this device.", "ok");
+      showConnectionSuccess(destination);
       return;
     }
     var target = new URL(url), port = target.port || "443";
@@ -557,34 +557,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
           failure = "The secure address answered with a different certificate identity. It may belong to another device. Check the host name and compare fingerprints before continuing.";
           throw new Error("fingerprint");
         }
-        $("install").hidden = true;
-        if (isLoopback()) {
-          showProbe("This browser already trusts this device. You are on the computer itself, so you stay on this page; Renew and Reset need it.", "ok");
-          return;
-        }
-        var left = 5;
-        var b = showProbe("", "ok");
-        if (i.certificateUpload === true && (forwardHeld || i.certificateRequestPending === true)) {
-          b.appendChild(el("span", "This device is trusted. "));
-          var stay = el("a", "Open the secure page"); stay.href = destination; b.appendChild(stay);
-          return;
-        }
-        var msg = el("span"), cancel = el("a", "Cancel");
-        cancel.href = "#"; cancel.style.marginLeft = ".6rem";
-        b.appendChild(msg); b.appendChild(cancel);
-        function tick() { msg.textContent = "This device is trusted. Opening the secure page in " + left + "…"; }
-        tick();
-        countdown = setInterval(function () {
-          left -= 1;
-          if (left <= 0) { clearInterval(countdown); location.replace(destination); } else { tick(); }
-        }, 1000);
-        function stop() {
-          clearInterval(countdown); forwardStop = null;
-          clear(b); b.appendChild(el("span", "This device is trusted. "));
-          var go = el("a", "Open the secure page"); go.href = destination; b.appendChild(go);
-        }
-        forwardStop = stop;
-        cancel.addEventListener("click", function (e) { e.preventDefault(); stop(); });
+        showConnectionSuccess(destination);
       })
       .catch(function (error) {
         clearTimeout(timer);
@@ -788,8 +761,6 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       .catch(ownCaught);
   }
 
-  $("own-cert").addEventListener("focusin", holdForward);
-  $("own-cert").addEventListener("pointerdown", holdForward);
   $("own-upload").addEventListener("click", function () { ownUpload(true); });
   $("signed-upload").addEventListener("click", function () { ownUpload(false); });
   $("csr-make").addEventListener("click", ownRequest);

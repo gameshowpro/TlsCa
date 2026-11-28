@@ -110,11 +110,11 @@ public sealed class ManagementPageTests
 
     /// <summary>
     /// The page counts down the firmware's boot window (<c>gateSecondsRemaining</c>, absent from this library's
-    /// <c>info.json</c>), words a 403 by its <c>reason</c> code, and keeps an HTTP page from forwarding to HTTPS while the
-    /// certificate section is in use. The behavior itself is covered by <c>tests/management-page.test.cjs</c>.
+    /// <c>info.json</c>), words a 403 by its <c>reason</c> code, and keeps setup available after an HTTPS connection,
+    /// including a browser certificate exception. The behavior itself is covered by <c>tests/management-page.test.cjs</c>.
     /// </summary>
     [TestMethod]
-    public async Task Page_CountsDownTheGate_WordsRefusalsByReason_AndHoldsTheForwardWhileTheCertificateSectionIsUsed()
+    public async Task Page_CountsDownTheGate_WordsRefusalsByReason_AndKeepsCertificateSetupAvailable()
     {
         await using TestApp app = await TestApp.Start();
 
@@ -125,7 +125,10 @@ public sealed class ManagementPageTests
         Assert.Contains("\"gate-closed\"", html);
         Assert.Contains("reason === \"host\"", html);
         Assert.Contains("reason === \"origin\"", html);
-        Assert.Contains("$(\"own-cert\").addEventListener(\"focusin\", holdForward);", html);
+        Assert.Contains("your browser may be using a certificate exception", html);
+        Assert.Contains("Certificate downloads remain available below", html);
+        Assert.DoesNotContain("This device is trusted", html);
+        Assert.DoesNotContain("location.replace(destination)", html);
         Assert.Contains("Recommended: create a signing request first.", html);
         Assert.Contains("RSA key", html);
         Assert.DoesNotContain("<script src", html);
@@ -141,7 +144,7 @@ public sealed class ManagementPageTests
         Assert.Contains("new URLSearchParams(location.search).get(\"returnTo\")", html);
         Assert.Contains("target.origin === base.origin", html);
         Assert.Contains("target.origin === setup.origin", html);
-        Assert.Contains("location.replace(destination);", html);
+        Assert.Contains("Open the app over HTTPS", html);
         Assert.Contains("id=\"http-fallback\" hidden", html);
         Assert.Contains("id=\"https-fallback\" hidden", html);
         Assert.Contains("id=\"http-to-https\" hidden", html);
